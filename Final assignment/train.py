@@ -30,7 +30,7 @@ from torchvision.transforms.v2 import (
     ToDtype,
 )
 
-import model
+from model import model
 
 
 # Mapping class IDs to train IDs
