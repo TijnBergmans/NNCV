@@ -107,11 +107,11 @@ class FaPNDecoder(nn.Module):
         return x
     
 class model(nn.Module):
-    def __init__(self,in_channels=3, num_classes=19):
+    def __init__(self,in_channels=3, n_classes=19):
         super(model, self).__init__()
         
         self.encoder = SwinEncoder()
-        self.decoder = FaPNDecoder(num_classes=num_classes)
+        self.decoder = FaPNDecoder(n_classes=n_classes)
         
     def forward(self, x):
 
