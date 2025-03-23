@@ -164,7 +164,7 @@ def main(args):
 
             optimizer.zero_grad()
 
-            with torch.cuda.amp.autocast('cuda'):
+            with torch.amp.autocast('cuda'):
                 outputs = model(images)
                 loss = criterion(outputs, labels)
 
