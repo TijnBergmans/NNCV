@@ -30,8 +30,7 @@ from torchvision.transforms.v2 import (
     ToDtype,
 )
 
-from model import model
-
+import model
 
 # Mapping class IDs to train IDs
 id_to_trainid = {cls.id: cls.train_id for cls in Cityscapes.classes}
@@ -131,7 +130,7 @@ def main(args):
     )
 
     # Define the model
-    model = model(
+    model = model.model(
         in_channels=3,  # RGB images
         n_classes=19,  # 19 classes in the Cityscapes dataset
     ).to(device)
@@ -236,3 +235,4 @@ if __name__ == "__main__":
     parser = get_args_parser()
     args = parser.parse_args()
     main(args)
+    
