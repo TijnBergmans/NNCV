@@ -58,7 +58,7 @@ def get_args_parser():
 
     parser = ArgumentParser("Training script for a PyTorch U-Net model")
     parser.add_argument("--data-dir", type=str, default="./data/cityscapes", help="Path to the training data")
-    parser.add_argument("--batch-size", type=int, default=64, help="Training batch size")
+    parser.add_argument("--batch-size", type=int, default=16, help="Training batch size")
     parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs")
     parser.add_argument("--lr", type=float, default=0.001, help="Learning rate")
     parser.add_argument("--num-workers", type=int, default=10, help="Number of workers for data loaders")
