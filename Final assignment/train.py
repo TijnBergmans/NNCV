@@ -32,6 +32,8 @@ from torchvision.transforms.v2 import (
 
 import model as model_module
 
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 # Mapping class IDs to train IDs
 id_to_trainid = {cls.id: cls.train_id for cls in Cityscapes.classes}
 def convert_to_train_id(label_img: torch.Tensor) -> torch.Tensor:
@@ -69,6 +71,8 @@ def get_args_parser():
 
 
 def main(args):
+    torch.cuda.empty_cache()
+
     # Initialize wandb for logging
     wandb.init(
         project="5lsm0-cityscapes-segmentation",  # Project name in wandb
@@ -147,6 +151,8 @@ def main(args):
     for epoch in range(args.epochs):
         print(f"Epoch {epoch+1:04}/{args.epochs:04}")
 
+        scaler = torch.cuda.amp.GradScaler('cuda')  # Initialize the gradient scaler
+
         # Training
         model.train()
         for i, (images, labels) in enumerate(train_dataloader):
@@ -157,10 +163,14 @@ def main(args):
             labels = labels.long().squeeze(1)  # Remove channel dimension
 
             optimizer.zero_grad()
-            outputs = model(images)
-            loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
+
+            with torch.cuda.amp.autocast('cuda'):
+                outputs = model(images)
+                loss = criterion(outputs, labels)
+
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
             wandb.log({
                 "train_loss": loss.item(),
