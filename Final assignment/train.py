@@ -151,7 +151,7 @@ def main(args):
     for epoch in range(args.epochs):
         print(f"Epoch {epoch+1:04}/{args.epochs:04}")
 
-        scaler = torch.cuda.amp.GradScaler('cuda')  # Initialize the gradient scaler
+        #scaler = torch.amp.GradScaler('cuda')  # Initialize the gradient scaler
 
         # Training
         model.train()
@@ -164,13 +164,13 @@ def main(args):
 
             optimizer.zero_grad()
 
-            with torch.amp.autocast('cuda'):
-                outputs = model(images)
-                loss = criterion(outputs, labels)
+            #with torch.amp.autocast('cuda'):
+            outputs = model(images)
+            loss = criterion(outputs, labels)
 
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
+            loss.backward() #scaler.scale(loss).backward()
+            optimizer.step() #scaler.step(optimizer)
+            #scaler.update()
 
             wandb.log({
                 "train_loss": loss.item(),
