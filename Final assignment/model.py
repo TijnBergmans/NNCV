@@ -43,7 +43,7 @@ class SwinEncoder(nn.Module):
         return featuremaps
     
 class FaPNDecoder(nn.Module):
-    def __init__(self,in_channels=1024, out_channels=256, num_classes=19):
+    def __init__(self,in_channels=1024, out_channels=256, n_classes=19):
         super(FaPNDecoder, self).__init__()
 
         # Offset generation layers
@@ -71,7 +71,7 @@ class FaPNDecoder(nn.Module):
         
 
         # Final convolution layer
-        self.conv = nn.Conv2d(out_channels, num_classes, kernel_size=1)
+        self.conv = nn.Conv2d(out_channels, n_classes, kernel_size=1)
 
     def forward(self, features):
 
