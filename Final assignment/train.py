@@ -65,45 +65,42 @@ def convert_train_id_to_color(prediction: torch.Tensor) -> torch.Tensor:
     return color_image
 
 class SemanticSegmentationCriterion(nn.Module):
-    def __init__(self, num_classes, dice_loss_weight=0.5):
+    def __init__(self, num_classes):
         super().__init__()
         self.num_classes = num_classes
-        self.dice_loss_weight = dice_loss_weight
-        self.ce_loss = nn.CrossEntropyLoss(ignore_index=255)
-
+        self.class_loss = nn.CrossEntropyLoss(ignore_index=255)
+        self.mask_loss = nn.BCEWithLogitsLoss()
+        self.dice_loss_weight = 1.0  # Can be adjusted
+    
     def dice_loss(self, pred, target):
-        """Computes Dice loss to improve segmentation performance."""
-        pred = pred.softmax(dim=1)  # Convert logits to probabilities
-        target_onehot = F.one_hot(target, num_classes=self.num_classes).permute(0, 3, 1, 2)
-
-        intersection = (pred * target_onehot).sum(dim=(2, 3))
-        union = pred.sum(dim=(2, 3)) + target_onehot.sum(dim=(2, 3))
-        
-        dice = 1 - (2. * intersection + 1) / (union + 1)  # Smooth to prevent NaN
-        return dice.mean()
-
+        """Computes the Dice loss for segmentation."""
+        pred = torch.sigmoid(pred)  # Convert logits to probabilities
+        intersection = (pred * target).sum(dim=(2, 3))
+        union = pred.sum(dim=(2, 3)) + target.sum(dim=(2, 3))
+        dice = (2. * intersection + 1e-6) / (union + 1e-6)  # Smooth to avoid div-by-zero
+        return 1 - dice.mean()
+    
     def forward(self, outputs, targets):
-        """Computes the total loss."""
-        pred_masks = outputs["pred_masks"]  # Shape: [B, num_classes, H, W]
-        H, W = pred_masks.shape[-2:]
-
-        print('Targets:', targets.shape)
-        if targets.dim() == 3:
-            targets = targets.unsqueeze(1)
-
-        # Resize targets to match predictions
-        targets_resized = F.interpolate(
-            targets.float(), size=(H, W), mode='nearest'
-        ).squeeze(1).long()
-
-        ce_loss = self.ce_loss(pred_masks, targets_resized)
-
-        if self.dice_loss_weight > 0:
-            dice_loss = self.dice_loss(pred_masks, targets_resized)
-            total_loss = ce_loss + self.dice_loss_weight * dice_loss
-        else:
-            total_loss = ce_loss
-
+        pred_logits = outputs["pred_logits"]  # [Batch, n_queries, n_classes]
+        pred_masks = outputs["pred_masks"]    # [Batch, n_queries, H, W]
+        B, n_queries, H, W = pred_masks.shape
+        
+        # Resize targets to match mask size
+        targets_resized = F.interpolate(targets.unsqueeze(1).float(), size=(H, W), mode='nearest').squeeze(1).long()
+        ignore_mask = (targets_resized == 255)
+        valid_mask = ~ignore_mask
+        
+        # Compute class loss (on the best matching query for each pixel)
+        class_loss = self.class_loss(pred_logits.mean(dim=1), targets_resized)
+        
+        # Compute mask loss
+        target_onehot = F.one_hot(torch.clamp(targets_resized, 0, self.num_classes - 1), num_classes=self.num_classes)
+        target_onehot = target_onehot.permute(0, 3, 1, 2).float()  # [B, num_classes, H, W]
+        
+        mask_loss = self.mask_loss(pred_masks.mean(dim=1), target_onehot)  # Mean over queries
+        dice_loss = self.dice_loss(pred_masks.mean(dim=1), target_onehot)
+        
+        total_loss = class_loss + mask_loss + self.dice_loss_weight * dice_loss
         return total_loss
 
 def get_args_parser():
