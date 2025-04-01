@@ -65,7 +65,7 @@ def convert_train_id_to_color(prediction: torch.Tensor) -> torch.Tensor:
     return color_image
 
 class SemanticSegmentationCriterion(nn.Module):
-    def __init__(self, num_classes=19, ignore_index=255, dice_weight=0.5, ce_weight=0.5, smooth=1e-6):
+    def __init__(self, num_classes=19, ignore_index=255, dice_weight=0.3, ce_weight=0.7, smooth=1e-5):
         """
         Combined Dice + Cross-Entropy Loss for segmentation.
         
@@ -231,7 +231,7 @@ def main(args):
 
     # Define the learning rate scheduler
     total_steps = args.epochs * len(train_dataloader)  # ~186 steps/epoch for Cityscapes
-    warmup_steps = 500  # ~2-3 epochs
+    warmup_steps = 1000  # ~2-3 epochs
 
     lr_scheduler = torch.optim.lr_scheduler.SequentialLR(
         optimizer,
@@ -247,7 +247,7 @@ def main(args):
             torch.optim.lr_scheduler.CosineAnnealingLR(
                 optimizer,
                 T_max=total_steps - warmup_steps,
-                eta_min=args.lr/25  # 4% of initial LR
+                eta_min=args.lr/10  # 4% of initial LR
             )
         ],
         milestones=[warmup_steps]
@@ -284,6 +284,12 @@ def main(args):
                 loss = criterion(outputs, labels)
 
             scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(
+                model.parameters(),
+                max_norm=1.0,
+                norm_type=2.0
+            )
             scaler.step(optimizer)
             scaler.update()
             lr_scheduler.step()

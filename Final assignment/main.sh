@@ -4,7 +4,7 @@ python3 train.py \
     --data-dir ./data/cityscapes \
     --batch-size 16 \
     --epochs 100 \
-    --lr 0.001 \
+    --lr 6e-5 \
     --num-workers 10 \
     --seed 42 \
     --experiment-id "Mask2Former training" \
