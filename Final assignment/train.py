@@ -85,8 +85,10 @@ class SemanticSegmentationCriterion(nn.Module):
         pred_masks = outputs["pred_masks"]    # [Batch, n_queries, H, W]
         B, n_queries, H, W = pred_masks.shape
         
+        targets = targets.unsqueeze(1)
+
         # Resize targets to match mask size
-        targets_resized = F.interpolate(targets.unsqueeze(1).float(), size=(H, W), mode='nearest').squeeze(1).long()
+        targets_resized = F.interpolate(targets.float(), size=(H, W), mode='nearest').squeeze(1).long()
         ignore_mask = (targets_resized == 255)
         valid_mask = ~ignore_mask
         
