@@ -74,6 +74,10 @@ class SemanticSegmentationCriterion(nn.Module):
     def forward(self, outputs, targets):
         # Resize targets to match mask predictions
         H, W = outputs["pred_masks"].shape[-2:]
+
+        if targets.dim() == 3:
+            targets = targets.unsqueeze(1)
+
         targets_resized = F.interpolate(
             targets.unsqueeze(1).float(),
             size=(H,W),
