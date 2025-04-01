@@ -64,49 +64,75 @@ def convert_train_id_to_color(prediction: torch.Tensor) -> torch.Tensor:
 
     return color_image
 
-def collate_fn(batch):
-    images = [item[0] for item in batch]
-    masks = [convert_to_train_id(item[1]) for item in batch]  # Convert to train IDs
-    
-    # Stack images and masks
-    images = torch.stack(images)
-    masks = torch.stack(masks)  # [batch, H, W] with class indices (0-18)
-    
-    return images, masks
-
 class SemanticSegmentationCriterion(nn.Module):
     def __init__(self, num_classes):
         super().__init__()
         self.num_classes = num_classes
         self.class_loss = nn.CrossEntropyLoss(ignore_index=255)
-        self.mask_loss = nn.BCEWithLogitsLoss()
+        self.mask_loss = nn.BCEWithLogitsLoss(reduction='none')  # Changed to no reduction
     
     def forward(self, outputs, targets):
         # Resize targets to match mask predictions
         H, W = outputs["pred_masks"].shape[-2:]
         targets_resized = F.interpolate(
-            targets.unsqueeze(1).float(), 
-            size=(H,W), 
+            targets.unsqueeze(1).float(),
+            size=(H,W),
             mode='nearest'
         ).squeeze(1).long()
         
         # Class prediction loss
-        class_loss = self.class_loss(
-            outputs["pred_logits"].flatten(0, 1),
-            targets_resized.unsqueeze(1)
-              .expand(-1, outputs["pred_logits"].shape[1], -1, -1)
-              .flatten(0, 1)
-        )
+        class_pred = outputs["pred_logits"]  # [bs, num_queries, num_classes]
+        class_loss = 0
+        for b in range(class_pred.shape[0]):
+            query_losses = []
+            for q in range(class_pred.shape[1]):
+                target_patch = targets_resized[b]  # [H, W]
+                loss = self.class_loss(
+                    class_pred[b,q].unsqueeze(0).expand(H*W, -1),
+                    target_patch.flatten()
+                )
+                query_losses.append(loss)
+            class_loss += torch.mean(torch.stack(query_losses))
+        class_loss /= class_pred.shape[0]
         
-        # Mask alignment loss
-        target_masks = F.one_hot(targets_resized, num_classes=self.num_classes)
-        target_masks = target_masks.permute(0,3,1,2)  # [bs, num_classes, H, W]
-        mask_loss = self.mask_loss(
-            outputs["pred_masks"],  # [bs, num_queries, H, W]
-            target_masks.unsqueeze(1)  # [bs, 1, num_classes, H, W]
-              .expand(-1, outputs["pred_masks"].shape[1], -1, -1, -1)
-              .float()
-        )
+        # Mask alignment loss - corrected version
+        mask_pred = outputs["pred_masks"]  # [bs, num_queries, H, W]
+        valid_mask = (targets_resized != 255)  # [bs, H, W]
+        
+        # Clip labels to valid range
+        clipped_labels = torch.clamp(targets_resized, 0, self.num_classes-1)
+        target_masks = F.one_hot(clipped_labels, num_classes=self.num_classes)  # [bs, H, W, num_classes]
+        target_masks = target_masks.float()
+        
+        # Compute mask loss
+        mask_loss = 0
+        valid_count = 0
+        
+        for b in range(mask_pred.shape[0]):
+            sample_valid = valid_mask[b]  # [H, W]
+            if not sample_valid.any():
+                continue
+                
+            num_valid = sample_valid.sum().item()
+            
+            # Get valid pixels predictions [num_queries, num_valid]
+            pred_valid = mask_pred[b,:,sample_valid].t()  # [num_valid, num_queries]
+            
+            # Get corresponding target masks [num_valid, num_classes]
+            target_valid = target_masks[b,sample_valid]  # [num_valid, num_classes]
+            
+            # Compute per-class loss and take mean
+            loss_matrix = self.mask_loss(
+                pred_valid.unsqueeze(-1).expand(-1, -1, self.num_classes),  # [num_valid, num_queries, num_classes]
+                target_valid.unsqueeze(1).expand(-1, mask_pred.shape[1], -1)  # [num_valid, num_queries, num_classes]
+            )
+            
+            # Average over queries and classes
+            query_loss = loss_matrix.mean()
+            mask_loss += query_loss
+            valid_count += 1
+        
+        mask_loss = mask_loss / valid_count if valid_count > 0 else torch.tensor(0.0)
         
         return class_loss + mask_loss
 
@@ -205,17 +231,13 @@ def main(args):
         train_dataset, 
         batch_size=args.batch_size, 
         shuffle=True,
-        num_workers=args.num_workers,
-        collate_fn=collate_fn,
-        pin_memory=True
+        num_workers=args.num_workers
     )
     valid_dataloader = DataLoader(
         valid_dataset, 
         batch_size=args.batch_size, 
         shuffle=False,
-        num_workers=args.num_workers,
-        collate_fn=collate_fn,
-        pin_memory=True
+        num_workers=args.num_workers
     )
 
     # Define the model
@@ -256,15 +278,15 @@ def main(args):
         model.train()
         train_loss = 0.0
 
-        for i, (images, targets) in enumerate(train_dataloader):
+        for i, (images, labels) in enumerate(train_dataloader):
 
-            images, targets = images.to(device), targets.to(device)
+            images, labels = images.to(device), labels.to(device)
         
             optimizer.zero_grad()
 
             with autocast('cuda'):
                 outputs = model(images)
-                loss = criterion(outputs, targets)
+                loss = criterion(outputs, labels)
 
             scaler.scale(loss).backward()
             scaler.step(optimizer)
@@ -287,12 +309,12 @@ def main(args):
         val_loss = 0.0
 
         with torch.no_grad():
-            for i, (images, targets) in enumerate(valid_dataloader):
+            for images, labels in enumerate(valid_dataloader):
 
-                images, targets = images.to(device), targets.to(device)
+                images, labels = images.to(device), labels.to(device)
 
                 outputs = model(images)
-                loss = criterion(outputs, targets)
+                loss = criterion(outputs, labels)
 
                 val_loss += loss.item()
 
@@ -305,7 +327,7 @@ def main(args):
                         ).argmax(1)
                         
                         preds_color = convert_train_id_to_color(preds.unsqueeze(1))
-                        targets_color = convert_train_id_to_color(targets.unsqueeze(1))
+                        targets_color = convert_train_id_to_color(labels.unsqueeze(1))
                         
                         wandb.log({
                             "predictions": [wandb.Image(make_grid(preds_color, nrow=4).permute(1,2,0).cpu().numpy())],
