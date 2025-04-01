@@ -64,7 +64,7 @@ def convert_train_id_to_color(prediction: torch.Tensor) -> torch.Tensor:
 
     return color_image
 
-class SegmentationLoss(nn.Module):
+class SemanticSegmentationCriterion(nn.Module):
     def __init__(self, num_classes=19, ignore_index=255, dice_weight=0.5, ce_weight=0.5, smooth=1e-6):
         """
         Combined Dice + Cross-Entropy Loss for segmentation.
