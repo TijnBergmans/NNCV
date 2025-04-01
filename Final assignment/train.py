@@ -284,69 +284,61 @@ def main(args):
                     "epoch": epoch + (i/len(train_dataloader)),
                 })
             
-        # Validation
+         # Validation
         model.eval()
-        val_loss = 0.0
-
         with torch.no_grad():
-            for images, labels in enumerate(valid_dataloader):
+            losses = []
+            for i, (images, labels) in enumerate(valid_dataloader):
 
-                labels = convert_to_train_id(labels)
+                labels = convert_to_train_id(labels)  # Convert class IDs to train IDs
                 images, labels = images.to(device), labels.to(device)
 
-                labels = labels.long().squeeze(1)
+                labels = labels.long().squeeze(1)  # Remove channel dimension
 
                 outputs = model(images)
                 loss = criterion(outputs, labels)
-
-                val_loss += loss.item()
-
-                if i == 0:  # Visualize first batch
-                    with torch.no_grad():
-                        preds = outputs.argmax(1)
-                        
-                        preds_color = convert_train_id_to_color(preds.unsqueeze(1))
-                        targets_color = convert_train_id_to_color(labels.unsqueeze(1))
-                        
-                        wandb.log({
-                            "predictions": [wandb.Image(make_grid(preds_color, nrow=4).permute(1,2,0).cpu().numpy())],
-                            "labels": [wandb.Image(make_grid(targets_color, nrow=4).permute(1,2,0).cpu().numpy())],
-                        }, commit=False)
+                losses.append(loss.item())
             
-            avg_valid_loss = val_loss / len(valid_dataloader)
+                if i == 0:
+                    predictions = outputs.softmax(1).argmax(1)
+
+                    predictions = predictions.unsqueeze(1)
+                    labels = labels.unsqueeze(1)
+
+                    predictions = convert_train_id_to_color(predictions)
+                    labels = convert_train_id_to_color(labels)
+
+                    predictions_img = make_grid(predictions.cpu(), nrow=8)
+                    labels_img = make_grid(labels.cpu(), nrow=8)
+
+                    predictions_img = predictions_img.permute(1, 2, 0).numpy()
+                    labels_img = labels_img.permute(1, 2, 0).numpy()
+
+                    wandb.log({
+                        "predictions": [wandb.Image(predictions_img)],
+                        "labels": [wandb.Image(labels_img)],
+                    }, step=(epoch + 1) * len(train_dataloader) - 1)
+            
+            valid_loss = sum(losses) / len(losses)
             wandb.log({
-                "valid_loss": avg_valid_loss
+                "valid_loss": valid_loss
             }, step=(epoch + 1) * len(train_dataloader) - 1)
 
-            # Checkpointing logic
-            if avg_valid_loss < best_valid_loss:
-                best_valid_loss = avg_valid_loss
+            if valid_loss < best_valid_loss:
+                best_valid_loss = valid_loss
                 if current_best_model_path:
                     os.remove(current_best_model_path)
                 current_best_model_path = os.path.join(
                     output_dir, 
-                    f"best_model-epoch={epoch:04}-val_loss={avg_valid_loss:04}.pth"
+                    f"best_model-epoch={epoch:04}-val_loss={valid_loss:04}.pth"
                 )
                 torch.save(model.state_dict(), current_best_model_path)
-            
-            # Periodic checkpointing
-            if (epoch + 1) % args.checkpoint_interval == 0:
-                checkpoint_path = os.path.join(
-                    output_dir, 
-                    f"checkpoint-epoch={epoch:04}-val_loss={avg_valid_loss:.4f}.pth"
-                )
-                torch.save({
-                    'epoch': epoch,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'loss': avg_valid_loss,
-                    'scaler_state_dict': scaler.state_dict()
-                }, checkpoint_path)
+        
 
             # Early stopping check
-            if early_stopping(avg_valid_loss, model):
-                print("Early stopping triggered")
-                break
+            #if early_stopping(avg_valid_loss, model):
+            #    print("Early stopping triggered")
+            #    break
         
     print("Training complete!")
 
