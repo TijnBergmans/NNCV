@@ -87,9 +87,13 @@ class SemanticSegmentationCriterion(nn.Module):
         pred_masks = outputs["pred_masks"]  # Shape: [B, num_classes, H, W]
         H, W = pred_masks.shape[-2:]
 
+        print('Targets:', targets.shape)
+        if targets.dim() == 3:
+            targets = targets.unsqueeze(1)
+
         # Resize targets to match predictions
         targets_resized = F.interpolate(
-            targets.unsqueeze(1).float(), size=(H, W), mode='nearest'
+            targets.float(), size=(H, W), mode='nearest'
         ).squeeze(1).long()
 
         ce_loss = self.ce_loss(pred_masks, targets_resized)
