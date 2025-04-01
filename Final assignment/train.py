@@ -230,13 +230,28 @@ def main(args):
     optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=0.05)
 
     # Define the learning rate scheduler
+    total_steps = args.epochs * len(train_dataloader)  # ~186 steps/epoch for Cityscapes
+    warmup_steps = 500  # ~2-3 epochs
+
     lr_scheduler = torch.optim.lr_scheduler.SequentialLR(
-    optimizer,
-    [
-        torch.optim.lr_scheduler.LinearLR(optimizer, 1e-6, 1, total_iters=500),
-        torch.optim.lr_scheduler.PolynomialLR(optimizer, power=0.9, total_iters=args.epochs-500)
-    ],
-    [500])
+        optimizer,
+        [
+            # Warmup phase
+            torch.optim.lr_scheduler.LinearLR(
+                optimizer, 
+                start_factor=1e-6, 
+                end_factor=1.0, 
+                total_iters=warmup_steps
+            ),
+            # Cosine decay
+            torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer,
+                T_max=total_steps - warmup_steps,
+                eta_min=args.lr/25  # 4% of initial LR
+            )
+        ],
+        milestones=[warmup_steps]
+    )
 
     # Mixed precision training
     scaler = GradScaler('cuda')  # Initialize the gradient scaler
@@ -347,7 +362,7 @@ def main(args):
         model.state_dict(),
         os.path.join(
             output_dir,
-            f"final_model-epoch={epoch:04}-val_loss={avg_valid_loss:04}.pth"
+            f"final_model-epoch={epoch:04}-val_loss={valid_loss:04}.pth"
         )
     )
     wandb.finish()
