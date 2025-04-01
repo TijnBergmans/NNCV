@@ -65,106 +65,42 @@ def convert_train_id_to_color(prediction: torch.Tensor) -> torch.Tensor:
     return color_image
 
 class SemanticSegmentationCriterion(nn.Module):
-    def __init__(self, num_classes):
+    def __init__(self, num_classes, dice_loss_weight=0.5):
         super().__init__()
         self.num_classes = num_classes
-        self.class_loss = nn.CrossEntropyLoss(ignore_index=255)
-        self.mask_loss = nn.BCEWithLogitsLoss(reduction='none')
+        self.dice_loss_weight = dice_loss_weight
+        self.ce_loss = nn.CrossEntropyLoss(ignore_index=255)
+
+    def dice_loss(self, pred, target):
+        """Computes Dice loss to improve segmentation performance."""
+        pred = pred.softmax(dim=1)  # Convert logits to probabilities
+        target_onehot = F.one_hot(target, num_classes=self.num_classes).permute(0, 3, 1, 2)
+
+        intersection = (pred * target_onehot).sum(dim=(2, 3))
+        union = pred.sum(dim=(2, 3)) + target_onehot.sum(dim=(2, 3))
+        
+        dice = 1 - (2. * intersection + 1) / (union + 1)  # Smooth to prevent NaN
+        return dice.mean()
 
     def forward(self, outputs, targets):
-        # Ensure we have valid inputs
-        assert outputs["pred_logits"].dim() == 3
-        assert outputs["pred_masks"].dim() == 4
-        assert targets.dim() in [3, 4]
-        
-        # Get mask prediction size
-        H, W = outputs["pred_masks"].shape[-2:]
-        
-        # Handle input dimensions
-        if targets.dim() == 4:
-            targets = targets.squeeze(1)
-        
-        # Convert to 4D for interpolation
-        targets_4d = targets.unsqueeze(1).float()
+        """Computes the total loss."""
+        pred_masks = outputs["pred_masks"]  # Shape: [B, num_classes, H, W]
+        H, W = pred_masks.shape[-2:]
+
+        # Resize targets to match predictions
         targets_resized = F.interpolate(
-            targets_4d,
-            size=(H, W),
-            mode='nearest'
+            targets.unsqueeze(1).float(), size=(H, W), mode='nearest'
         ).squeeze(1).long()
-        
-        # Verify label ranges
-        valid_labels = torch.logical_and(targets_resized >= 0, targets_resized < self.num_classes)
-        ignore_mask = (targets_resized == 255)
-        assert torch.all(valid_labels | ignore_mask), "Labels must be in [0, num_classes) or 255"
-        
-        # Early return if all pixels are ignored
-        if ignore_mask.all():
-            return torch.tensor(0.0, device=targets.device, requires_grad=True)
-        
-        # Class prediction loss
-        class_pred = outputs["pred_logits"]  # [bs, num_queries, num_classes]
-        class_loss = torch.tensor(0.0, device=targets.device, requires_grad=True)
-        valid_batches = 0
-        
-        for b in range(class_pred.shape[0]):
-            target_patch = targets_resized[b]  # [H, W]
-            valid_pixels = ~ignore_mask[b]
-            
-            if not valid_pixels.any():
-                continue
-                
-            # Get valid pixels only
-            valid_targets = target_patch[valid_pixels]
-            valid_preds = class_pred[b].unsqueeze(1).expand(-1, valid_pixels.sum(), -1)
-            
-            # Compute loss for each query
-            query_losses = []
-            for q in range(class_pred.shape[1]):
-                loss = self.class_loss(
-                    valid_preds[q],  # [num_valid, num_classes]
-                    valid_targets    # [num_valid]
-                )
-                query_losses.append(loss)
-            
-            if query_losses:
-                class_loss = class_loss + torch.mean(torch.stack(query_losses))
-                valid_batches += 1
-        
-        class_loss = class_loss / max(valid_batches, 1)
-        
-        # Mask alignment loss
-        mask_pred = outputs["pred_masks"]  # [bs, num_queries, H, W]
-        valid_mask = ~ignore_mask
-        
-        if valid_mask.any():
-            clipped_labels = torch.clamp(targets_resized, 0, self.num_classes-1)
-            target_masks = F.one_hot(clipped_labels, num_classes=self.num_classes).float()
-            
-            mask_loss = torch.tensor(0.0, device=targets.device, requires_grad=True)
-            valid_count = 0
-            
-            for b in range(mask_pred.shape[0]):
-                sample_valid = valid_mask[b]
-                if not sample_valid.any():
-                    continue
-                    
-                num_valid = sample_valid.sum()
-                pred_valid = mask_pred[b,:,sample_valid].t()  # [num_valid, num_queries]
-                target_valid = target_masks[b,sample_valid]   # [num_valid, num_classes]
-                
-                loss_matrix = self.mask_loss(
-                    pred_valid.unsqueeze(-1).expand(-1, -1, self.num_classes),
-                    target_valid.unsqueeze(1).expand(-1, mask_pred.shape[1], -1)
-                )
-                
-                mask_loss = mask_loss + loss_matrix.mean()
-                valid_count += 1
-            
-            mask_loss = mask_loss / max(valid_count, 1)
+
+        ce_loss = self.ce_loss(pred_masks, targets_resized)
+
+        if self.dice_loss_weight > 0:
+            dice_loss = self.dice_loss(pred_masks, targets_resized)
+            total_loss = ce_loss + self.dice_loss_weight * dice_loss
         else:
-            mask_loss = torch.tensor(0.0, device=targets.device, requires_grad=True)
-        
-        return class_loss + mask_loss
+            total_loss = ce_loss
+
+        return total_loss
 
 def get_args_parser():
 
