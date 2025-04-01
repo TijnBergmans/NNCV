@@ -64,43 +64,53 @@ def convert_train_id_to_color(prediction: torch.Tensor) -> torch.Tensor:
 
     return color_image
 
-class SemanticSegmentationCriterion(nn.Module):
-    def __init__(self, num_classes):
+class SegmentationLoss(nn.Module):
+    def __init__(self, num_classes=19, ignore_index=255, dice_weight=0.5, ce_weight=0.5, smooth=1e-6):
+        """
+        Combined Dice + Cross-Entropy Loss for segmentation.
+        
+        :param num_classes: Number of classes
+        :param ignore_index: Label index to ignore in the loss computation
+        :param dice_weight: Weight for Dice loss component
+        :param ce_weight: Weight for Cross-Entropy loss component
+        :param smooth: Smoothing factor for Dice loss to prevent division by zero
+        """
         super().__init__()
         self.num_classes = num_classes
-        self.class_loss = nn.CrossEntropyLoss(ignore_index=255)
-        self.mask_loss = nn.BCEWithLogitsLoss()
-        self.dice_loss_weight = 1.0  # Can be adjusted
-    
-    def dice_loss(self, pred, target):
-        """Computes the Dice loss for segmentation."""
-        pred = torch.sigmoid(pred)  # Convert logits to probabilities
-        intersection = (pred * target).sum(dim=(2, 3))
-        union = pred.sum(dim=(2, 3)) + target.sum(dim=(2, 3))
-        dice = (2. * intersection + 1e-6) / (union + 1e-6)  # Smooth to avoid div-by-zero
-        return 1 - dice.mean()
-    
-    def forward(self, outputs, targets):
-        pred_logits = outputs["pred_logits"]  # [Batch, n_queries, n_classes]
-        pred_masks = outputs["pred_masks"]    # [Batch, n_queries, H, W]
-        B, n_queries, H, W = pred_masks.shape
+        self.ignore_index = ignore_index
+        self.dice_weight = dice_weight
+        self.ce_weight = ce_weight
+        self.smooth = smooth
+        self.ce_loss = nn.CrossEntropyLoss(ignore_index=ignore_index)
 
-        # Resize targets to match mask size
-        targets_resized = F.interpolate(targets.float(), size=(H, W), mode='nearest').squeeze(1).long()
-        ignore_mask = (targets_resized == 255)
-        valid_mask = ~ignore_mask
-        
-        # Compute class loss (on the best matching query for each pixel)
-        class_loss = self.class_loss(pred_logits.mean(dim=1), targets_resized)
-        
-        # Compute mask loss
-        target_onehot = F.one_hot(torch.clamp(targets_resized, 0, self.num_classes - 1), num_classes=self.num_classes)
-        target_onehot = target_onehot.permute(0, 3, 1, 2).float()  # [B, num_classes, H, W]
-        
-        mask_loss = self.mask_loss(pred_masks.mean(dim=1), target_onehot)  # Mean over queries
-        dice_loss = self.dice_loss(pred_masks.mean(dim=1), target_onehot)
-        
-        total_loss = class_loss + mask_loss + self.dice_loss_weight * dice_loss
+    def forward(self, preds, targets):
+        """
+        preds: [B, num_classes, H, W] (Raw logits, softmax will be applied)
+        targets: [B, H, W] (Class indices)
+        """
+        B, C, H, W = preds.shape
+
+        # Cross-Entropy Loss
+        ce_loss = self.ce_loss(preds, targets)
+
+        # Apply softmax to get class probabilities for Dice loss
+        preds_softmax = F.softmax(preds, dim=1)  # [B, C, H, W]
+
+        # Create one-hot encoding of targets, ignoring ignored pixels
+        targets_onehot = F.one_hot(targets.clamp(0, self.num_classes - 1), num_classes=self.num_classes)  # [B, H, W, C]
+        targets_onehot = targets_onehot.permute(0, 3, 1, 2).float()  # [B, C, H, W]
+
+        # Mask out ignored pixels
+        valid_mask = (targets != self.ignore_index).float()  # [B, H, W]
+        valid_mask = valid_mask.unsqueeze(1)  # [B, 1, H, W]
+
+        # Compute Dice loss
+        intersection = (preds_softmax * targets_onehot * valid_mask).sum(dim=(2, 3))  # [B, C]
+        union = (preds_softmax * valid_mask).sum(dim=(2, 3)) + (targets_onehot * valid_mask).sum(dim=(2, 3))  # [B, C]
+        dice_loss = 1 - ((2. * intersection + self.smooth) / (union + self.smooth)).mean()  # Scalar
+
+        # Weighted sum of losses
+        total_loss = self.ce_weight * ce_loss + self.dice_weight * dice_loss
         return total_loss
 
 def get_args_parser():
@@ -247,7 +257,10 @@ def main(args):
 
         for i, (images, labels) in enumerate(train_dataloader):
 
+            labels = convert_to_train_id(labels)
             images, labels = images.to(device), labels.to(device)
+
+            labels = labels.long().squeeze(1)
         
             optimizer.zero_grad()
 
@@ -278,7 +291,10 @@ def main(args):
         with torch.no_grad():
             for images, labels in enumerate(valid_dataloader):
 
+                labels = convert_to_train_id(labels)
                 images, labels = images.to(device), labels.to(device)
+
+                labels = labels.long().squeeze(1)
 
                 outputs = model(images)
                 loss = criterion(outputs, labels)
