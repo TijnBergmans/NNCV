@@ -303,11 +303,7 @@ def main(args):
 
                 if i == 0:  # Visualize first batch
                     with torch.no_grad():
-                        preds = torch.einsum(
-                            'bqc,bqhw->bchw',
-                            outputs["pred_logits"].softmax(-1),
-                            outputs["pred_masks"].sigmoid()
-                        ).argmax(1)
+                        preds = outputs.argmax(1)
                         
                         preds_color = convert_train_id_to_color(preds.unsqueeze(1))
                         targets_color = convert_train_id_to_color(labels.unsqueeze(1))

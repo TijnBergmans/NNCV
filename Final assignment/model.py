@@ -328,7 +328,4 @@ class Model(nn.Module):
 
         seg_map = self.segmentation_head(pixel_decoder_features, mask_pred, class_logits)
 
-        return {
-            "pred_logits": class_logits,
-            "pred_masks": mask_logits[-1]
-        }
+        return seg_map
