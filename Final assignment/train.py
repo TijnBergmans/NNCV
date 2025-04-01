@@ -69,46 +69,65 @@ class SemanticSegmentationCriterion(nn.Module):
         super().__init__()
         self.num_classes = num_classes
         self.class_loss = nn.CrossEntropyLoss(ignore_index=255)
-        self.mask_loss = nn.BCEWithLogitsLoss(reduction='none')  # Changed to no reduction
-    
+        self.mask_loss = nn.BCEWithLogitsLoss(reduction='none')
+
     def forward(self, outputs, targets):
-        # Resize targets to match mask predictions
+        # Get mask prediction size
         H, W = outputs["pred_masks"].shape[-2:]
-
-        if targets.dim() == 3:
-            targets = targets.unsqueeze(1)
-
+        
+        # Handle input dimensions
+        if targets.dim() == 4:
+            targets = targets.squeeze(1)
+        elif targets.dim() != 3:
+            raise ValueError(f"Targets must have 3 or 4 dimensions, got {targets.dim()}")
+        
+        # Convert to 4D for interpolation
+        targets_4d = targets.unsqueeze(1).float()
         targets_resized = F.interpolate(
-            targets.unsqueeze(1).float(),
-            size=(H,W),
+            targets_4d,
+            size=(H, W),
             mode='nearest'
         ).squeeze(1).long()
+        
+        # Check if all pixels are ignored
+        if (targets_resized == 255).all():
+            return torch.tensor(0.0, device=targets.device)
         
         # Class prediction loss
         class_pred = outputs["pred_logits"]  # [bs, num_queries, num_classes]
         class_loss = 0
+        valid_batches = 0
+        
         for b in range(class_pred.shape[0]):
+            target_patch = targets_resized[b]  # [H, W]
+            if (target_patch == 255).all():
+                continue  # Skip fully ignored batches
+            
             query_losses = []
             for q in range(class_pred.shape[1]):
-                target_patch = targets_resized[b]  # [H, W]
                 loss = self.class_loss(
                     class_pred[b,q].unsqueeze(0).expand(H*W, -1),
                     target_patch.flatten()
                 )
                 query_losses.append(loss)
-            class_loss += torch.mean(torch.stack(query_losses))
-        class_loss /= class_pred.shape[0]
+            
+            if query_losses:  # Only add if we have valid queries
+                class_loss += torch.mean(torch.stack(query_losses))
+                valid_batches += 1
         
-        # Mask alignment loss - corrected version
+        class_loss = class_loss / valid_batches if valid_batches > 0 else torch.tensor(0.0)
+        
+        # Mask alignment loss
         mask_pred = outputs["pred_masks"]  # [bs, num_queries, H, W]
         valid_mask = (targets_resized != 255)  # [bs, H, W]
         
-        # Clip labels to valid range
-        clipped_labels = torch.clamp(targets_resized, 0, self.num_classes-1)
-        target_masks = F.one_hot(clipped_labels, num_classes=self.num_classes)  # [bs, H, W, num_classes]
-        target_masks = target_masks.float()
+        # Early return if no valid pixels
+        if not valid_mask.any():
+            return class_loss  # Only class loss if any, otherwise 0 from above
         
-        # Compute mask loss
+        clipped_labels = torch.clamp(targets_resized, 0, self.num_classes-1)
+        target_masks = F.one_hot(clipped_labels, num_classes=self.num_classes).float()
+        
         mask_loss = 0
         valid_count = 0
         
@@ -118,20 +137,14 @@ class SemanticSegmentationCriterion(nn.Module):
                 continue
                 
             num_valid = sample_valid.sum().item()
-            
-            # Get valid pixels predictions [num_queries, num_valid]
             pred_valid = mask_pred[b,:,sample_valid].t()  # [num_valid, num_queries]
-            
-            # Get corresponding target masks [num_valid, num_classes]
             target_valid = target_masks[b,sample_valid]  # [num_valid, num_classes]
             
-            # Compute per-class loss and take mean
             loss_matrix = self.mask_loss(
-                pred_valid.unsqueeze(-1).expand(-1, -1, self.num_classes),  # [num_valid, num_queries, num_classes]
-                target_valid.unsqueeze(1).expand(-1, mask_pred.shape[1], -1)  # [num_valid, num_queries, num_classes]
+                pred_valid.unsqueeze(-1).expand(-1, -1, self.num_classes),
+                target_valid.unsqueeze(1).expand(-1, mask_pred.shape[1], -1)
             )
             
-            # Average over queries and classes
             query_loss = loss_matrix.mean()
             mask_loss += query_loss
             valid_count += 1
