@@ -378,24 +378,6 @@ def main(args):
         num_workers=args.num_workers
     )
 
-    if args.pre_train:
-        coarse_dataset = Cityscapes(
-            args.data_dir,
-            split="train_extra",
-            mode="coarse",
-            target_type="semantic",
-            transforms=coarse_transform
-        )
-
-        coarse_dataset = wrap_dataset_for_transforms_v2(coarse_dataset)
-
-        coarse_dataloader = DataLoader(
-            coarse_dataset,
-            batch_size=args.batch_size,
-            shuffle=True,
-            num_workers=args.num_workers
-        )
-
     # Define the model
     model = model_module(
         in_channels=3,  # RGB images
@@ -412,14 +394,6 @@ def main(args):
     # Define the loss function
     criterion = SemanticSegmentationCriterion(class_weights=class_weights).to(device)
 
-    # Define the optimizer
-    optimizer = AdamW(
-        model.parameters(), 
-        lr=args.lr,
-        betas=(0.9, 0.999),
-        weight_decay=0.05
-    )
-
     # Initialize EMA
     ema = EMA(model, decay=0.9995)
 
@@ -428,91 +402,6 @@ def main(args):
 
     # Early stopping
     early_stopping = EarlyStopping(patience=args.early_stopping_patience, verbose=True)
-
-    # --- Pre Training ---
-    if args.pre_train:
-
-        # Freeze Swin
-        for param in model.encoder.parameters():
-            param.requires_grad = False
-
-        # Freeze Positional embedding
-        for param in model.transformer_decoder.pos_embed.parameters():
-            param.requires_grad = False
-
-        # Set higher LR for other modules
-        optimizer = AdamW([
-            {'params': model.pixel_decoder.parameters(), 'lr': Config.COARSE_LR},
-            {'params': model.transformer_decoder.parameters(), 'lr': Config.COARSE_LR},
-            {'params': model.seg_head.parameters(), 'lr': Config.COARSE_LR},
-
-            {'params': model.transformer_decoder.query_feat.parameters(), 'lr': 1e-4},
-            {'params': model.transformer_decoder.query_pos.parameters(), 'lr': 1e-4},
-            {'params': model.transformer_decoder.level_embed.parameters(), 'lr': 1e-4},
-            ],
-            weight_decay=Config.WEIGHT_DECAY
-        )
-
-        lr_scheduler = get_scheduler(
-            optimizer,
-            total_steps=Config.COARSE_EPOCHS*len(coarse_dataloader),
-            warmup_steps=Config.COARSE_WARMUP
-        )
-
-        print("Starting pre-training...")
-
-        for epoch in range(Config.COARSE_EPOCHS):
-            print(f"Epoch {epoch+1:04}/{Config.COARSE_EPOCHS:04}")
-            
-            model.train()
-
-            for i, (images, labels) in enumerate(coarse_dataloader):
-                labels = convert_to_train_id(labels)
-                images, labels = images.to(device), labels.to(device)
-
-                labels = labels.long().squeeze(1)
-
-                # Label smoothing
-                epsilon = 0.1
-                labels = (1-epsilon)*labels + epsilon/19
-            
-                optimizer.zero_grad()
-
-                with autocast(device_type='cuda', dtype=torch.float16):
-                    outputs = model(images)
-                    loss, _ = criterion(outputs, labels)
-
-                scaler.scale(loss).backward()
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(
-                    model.parameters(),
-                    max_norm=1.0,
-                    norm_type=2.0
-                )
-                scaler.step(optimizer)
-                scaler.update()
-                lr_scheduler.step()
-
-                wandb.log({
-                    "pre_train_loss": loss.item(),
-                    "pre_train_learning_rate": optimizer.param_groups[0]['lr'],
-                    "pre_train_epoch": epoch + 1
-                    }, 
-                    step = epoch * len(train_dataloader) + i
-                )
-
-        # Save pre-trained model
-
-        # Save the model
-        torch.save(
-            model.state_dict(),
-            os.path.join(
-                output_dir,
-                f"pre_trained_model-epoch={epoch:04}-val_loss={valid_loss:04}.pth"
-            )
-    )
-
-        print("Pre-training finished!")
 
     # --- Training ---
 
