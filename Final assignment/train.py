@@ -500,7 +500,7 @@ def main(args):
                 # Restore EMA
                 ema.restore()
                 outputs = model(images)
-                loss = criterion(outputs, labels)
+                loss, _ = criterion(outputs, labels)
                 losses.append(loss.item())
             
                 if i == 0:
