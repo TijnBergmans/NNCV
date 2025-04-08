@@ -387,7 +387,10 @@ def main(args):
     # Load class weights
     class_weights = get_class_weights(
         train_dataset=train_dataset,
-        weights_path='./weights/cityscapes_weights.pt',
+        weights_path=os.path.join(
+                    output_dir, 
+                    "cityscapes_class_weights.pth"
+                ),
         force_recompute=False    
     ).to(device)
 
