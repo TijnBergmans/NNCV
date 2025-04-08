@@ -502,6 +502,8 @@ def main(args):
                 outputs = model(images)
                 loss, _ = criterion(outputs, labels)
                 losses.append(loss.item())
+
+                outputs = outputs['segmentation']
             
                 if i == 0:
                     predictions = outputs.softmax(1).argmax(1)
