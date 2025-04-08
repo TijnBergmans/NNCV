@@ -242,7 +242,7 @@ def get_scheduler(optimizer, total_steps, warmup_steps):
                     optimizer,
                     start_factor=1e-6,
                     end_factor=1.0,
-                    total_itters=warmup_steps
+                    total_iters=warmup_steps
                 ),
                 torch.optim.lr_scheduler.CosineAnnealingLR(
                     optimizer,
