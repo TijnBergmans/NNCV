@@ -289,18 +289,18 @@ def main(args):
             size=(512, 512),
             scale=(0.3, 1.0),
             ratio=(0.8, 1.25)),
-        RandomApply(
+        RandomApply([
             ColorJitter(
                 brightness=0.3,
                 contrast=0.3,
-                hue=0.1),
+                hue=0.1)],
             p=0.5
         ),
-        RandomApply(
+        RandomApply([
             GaussianBlur(
                 kernel_size=3,
                 sigma=(0.1, 1.0)
-            ),
+            )],
             p=0.1
         ),
         ToDtype(torch.float32, scale=True),
