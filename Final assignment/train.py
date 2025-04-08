@@ -347,14 +347,6 @@ def main(args):
     ])
 
     # Load the dataset and make a split for training and validation
-    coarse_dataset = Cityscapes(
-        args.data_dir,
-        split="train_extra",
-        mode="coarse",
-        target_type="semantic",
-        transforms=coarse_transform
-    )
-
     train_dataset = Cityscapes(
         args.data_dir, 
         split="train", 
@@ -370,16 +362,8 @@ def main(args):
         transforms=val_transform
     )
 
-    coarse_dataset = wrap_dataset_for_transforms_v2(coarse_dataset)
     train_dataset = wrap_dataset_for_transforms_v2(train_dataset)
     valid_dataset = wrap_dataset_for_transforms_v2(valid_dataset)
-
-    coarse_dataloader = DataLoader(
-        coarse_dataset,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=args.num_workers
-    )
 
     train_dataloader = DataLoader(
         train_dataset, 
@@ -393,6 +377,24 @@ def main(args):
         shuffle=False,
         num_workers=args.num_workers
     )
+
+    if args.pre_train:
+        coarse_dataset = Cityscapes(
+            args.data_dir,
+            split="train_extra",
+            mode="coarse",
+            target_type="semantic",
+            transforms=coarse_transform
+        )
+
+        coarse_dataset = wrap_dataset_for_transforms_v2(coarse_dataset)
+
+        coarse_dataloader = DataLoader(
+            coarse_dataset,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=args.num_workers
+        )
 
     # Define the model
     model = model_module(
