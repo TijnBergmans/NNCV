@@ -440,6 +440,12 @@ def main(args):
         n_classes=19,  # 19 classes in the Cityscapes dataset
     ).to(device)
 
+    # Make sure all tensors are pushed to the same device
+    for name, param in model.named_parameters():
+        param.data = param.data.to(device)
+    for name, buffer in model.named_buffers():
+        buffer.data = buffer.data.to(device)
+
     # Initialize weights
     model.apply(init_weights)
 
@@ -470,7 +476,7 @@ def main(args):
     dice_metric = DiceScore().to(device)
 
     # Initialize EMA
-    ema = EMA(model, decay=0.999).to(device)
+    ema = EMA(model, decay=0.999)
 
     # Initialize gradient scaler
     scaler = GradScaler('cuda')
