@@ -494,7 +494,7 @@ def main(args):
             ce_weight=ce_weight, 
             dice_weight=dice_weight,
             aux_weight=aux_weight,
-            reg_loss=model.pixel_decoder.get_buffer('offset_reg_loss').item(),
+            reg_loss=model.pixel_decoder.offset_reg_loss
         ).to(device)
 
         # Freeze Swin
@@ -652,7 +652,7 @@ def main(args):
         ce_weight=ce_weight, 
         dice_weight=dice_weight,
         aux_weight=aux_weight,
-        reg_loss=model.pixel_decoder.get_buffer('offset_reg_loss').item()
+        reg_loss=model.pixel_decoder.offset_reg_loss
     ).to(device)
 
     # Set new LR

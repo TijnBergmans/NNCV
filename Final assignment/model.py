@@ -41,6 +41,7 @@ class FaPNDecoder(nn.Module):
 
         self.offset_scalers = nn.Parameter(torch.ones(len(in_channels)) * 3.0)
         self.reg_weight = reg_weight
+        self.offset_reg_loss = 0.0
         
         # Offset generation layers
         self.gen_offset = nn.ModuleList([
@@ -112,7 +113,7 @@ class FaPNDecoder(nn.Module):
 
         # Compute and save L2 penalty
         total_offset_reg = total_offset_reg * self.reg_weight
-        self.register_buffer('offset_reg_loss', total_offset_reg)
+        self.offset_reg_loss = total_offset_reg
         
         # Last upsample to produce detailed feature map for masking
         x = self.final_upsample(x)
