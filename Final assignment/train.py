@@ -409,28 +409,12 @@ def main(args):
             transforms=coarse_transform
         )
 
-        coarse_val_dataset = Cityscapes(
-            args.data_dir,
-            split="val",
-            mode="coarse",
-            target_type="semantic",
-            transforms=val_transform
-        )
-
         coarse_dataset = wrap_dataset_for_transforms_v2(coarse_dataset)
-        coarse_val_dataset = wrap_dataset_for_transforms_v2(coarse_val_dataset)
 
         coarse_dataloader = DataLoader(
             coarse_dataset,
             batch_size=args.batch_size,
             shuffle=True,
-            num_workers=args.num_workers
-        )
-
-        coarse_val_dataloader = DataLoader(
-            coarse_val_dataset,
-            batch_size=args.batch_size,
-            shuffle=False,
             num_workers=args.num_workers
         )
 
@@ -469,7 +453,7 @@ def main(args):
                     output_dir, 
                     "cityscapes_class_weights.pth"
                 ),
-        force_recompute=True    
+        force_recompute=False    
     ).to(device)
 
     # Define Dice metric
@@ -577,68 +561,34 @@ def main(args):
                     step = epoch * len(train_dataloader) + i
                 )
 
-            # Validation
-            model.eval()
-            with torch.no_grad():
-                coarse_losses = []
-                for i, (images, labels) in enumerate(coarse_val_dataloader):
-
-                    labels = convert_to_train_id(labels)  # Convert class IDs to train IDs
-                    images, labels = images.to(device), labels.to(device)
-
-                    labels = labels.long().squeeze(1)  # Remove channel dimension
-
-                    outputs = model(images)
-                    loss, _ = criterion(outputs, labels)
-                    dice = dice_metric(outputs['segmentation'], labels)
-                    coarse_losses.append(loss.item())
-
+                if i == 0:
                     outputs = outputs['segmentation']
-                
-                    if i == 0:
-                        predictions = outputs.softmax(1).argmax(1)
+                    predictions = outputs.softmax(1).argmax(1)
 
-                        predictions = predictions.unsqueeze(1)
-                        labels = labels.unsqueeze(1)
+                    predictions = predictions.unsqueeze(1)
+                    labels = labels.unsqueeze(1)
 
-                        predictions = convert_train_id_to_color(predictions)
-                        labels = convert_train_id_to_color(labels)
+                    predictions = convert_train_id_to_color(predictions)
+                    labels = convert_train_id_to_color(labels)
 
-                        predictions_img = make_grid(predictions.cpu(), nrow=8)
-                        labels_img = make_grid(labels.cpu(), nrow=8)
+                    predictions_img = make_grid(predictions.cpu(), nrow=8)
+                    labels_img = make_grid(labels.cpu(), nrow=8)
 
-                        predictions_img = predictions_img.permute(1, 2, 0).numpy()
-                        labels_img = labels_img.permute(1, 2, 0).numpy()
+                    predictions_img = predictions_img.permute(1, 2, 0).numpy()
+                    labels_img = labels_img.permute(1, 2, 0).numpy()
 
-                        wandb.log({
-                            "pre_train_predictions": [wandb.Image(predictions_img)],
-                            "pre_train_labels": [wandb.Image(labels_img)],
-                        }, step=(epoch + 1) * len(train_dataloader) - 1)
-                
-                coarse_valid_loss = sum(coarse_losses) / len(coarse_losses)
-                wandb.log({
-                    "pre_train_valid_loss": coarse_valid_loss,
-                    "DICE": dice
-                }, step=(epoch + 1) * len(train_dataloader) - 1)
-
-                # Early stopping check
-                if early_stopping(coarse_valid_loss, model):
-                    print("Early stopping triggered")
-                    torch.save(
-                        model.state_dict(),
-                        os.path.join(
-                            output_dir,
-                            "pre_trained_model.pth"
-                        )
-                    )
+                    wandb.log({
+                        "pre_train_predictions": [wandb.Image(predictions_img)],
+                        "pre_train_labels": [wandb.Image(labels_img)],
+                    }, step=(epoch + 1) * len(train_dataloader) - 1)
 
         torch.save(
-        model.state_dict(),
-        os.path.join(
-            output_dir,
-            "pre_trained_model.pth"
+            model.state_dict(),
+            os.path.join(
+                output_dir,
+                "pre_trained_model.pth"
+            )
         )
-    )
         
         print("Pre-training finished!")
 
