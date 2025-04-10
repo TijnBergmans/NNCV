@@ -7,8 +7,8 @@ python3 train.py \
     --lr 6e-5 \
     --num-workers 10 \
     --seed 42 \
-    --experiment-id "Mask2Former (pre)training" \
+    --experiment-id "(Pre) Training Full-Res" \
     --checkpoint-interval 5 \
     --early-stopping-patience 10 \
     --augmentation "lsj" \
-    --pre-train False \
+    --pre-train 1 \

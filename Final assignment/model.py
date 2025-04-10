@@ -36,14 +36,18 @@ class SwinEncoder(nn.Module):
         return featuremaps
     
 class FaPNDecoder(nn.Module):
-    def __init__(self,in_channels=[1024,512,256,128], out_channels=256, n_classes=19):
+    def __init__(self,in_channels=[1024,512,256,128], out_channels=256, n_classes=19, reg_weight=0.01):
         super(FaPNDecoder, self).__init__()
 
+        self.offset_scalers = nn.Parameter(torch.ones(len(in_channels)) * 3.0)
+        self.reg_weight = reg_weight
+        
         # Offset generation layers
         self.gen_offset = nn.ModuleList([
             nn.Sequential(
                 nn.Conv2d(ch, ch//2, kernel_size=3, padding=1),
-                nn.ReLU(),
+                nn.GroupNorm(num_groups=32, num_channels=ch//2),
+                nn.GELU(),
                 nn.Conv2d(ch//2, 18, kernel_size=3, padding=1),
                 # Optional to prevent exploding offsets
                 nn.Tanh()
@@ -55,12 +59,18 @@ class FaPNDecoder(nn.Module):
             DeformConv2d(ch, out_channels, kernel_size=3, padding=1) for ch in in_channels
         ])
 
+        # GroupNorm after deformable conv
+        self.post_deform_norm = nn.ModuleList([
+            nn.GroupNorm(num_groups=32, num_channels=out_channels)
+            for _ in in_channels
+        ])
+
         # Upsampling path
         self.upsamples = nn.ModuleList([
             nn.Sequential(
                 nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
                 nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
-                nn.BatchNorm2d(out_channels),
+                nn.GroupNorm(num_groups=32, num_channels=out_channels),
                 nn.ReLU()
             ) for _ in range(4)
         ])
@@ -69,8 +79,8 @@ class FaPNDecoder(nn.Module):
         self.final_upsample = nn.Sequential(
             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
             nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU()
+            nn.GroupNorm(num_groups=32, num_channels=out_channels),
+            nn.GELU()
         )
 
     def forward(self, features):
@@ -81,11 +91,17 @@ class FaPNDecoder(nn.Module):
 
         # Take deepest feature as starting point
         x = features[0]
+
+        # L2 norm for regularization
+        total_offset_reg = 0.0
     
         for i in range(len(features)):
             # Generate offsets and perform deformable convolution
-            offset = self.gen_offset[i](features[i])
+            offset = self.gen_offset[i](features[i])*self.offset_scalers[i]
             deformed_feat = self.deform_conv[i](features[i], offset)
+
+            # Compute L2 penalty
+            total_offset_reg += offset.pow(2).mean()
         
             # Step 2: Upsample
             if i != 0:
@@ -94,6 +110,10 @@ class FaPNDecoder(nn.Module):
             else:
                 x = deformed_feat  # Initialize with deepest deformed feature
 
+        # Compute and save L2 penalty
+        total_offset_reg = total_offset_reg * self.reg_weight
+        self.register_buffer('offset_reg_loss', total_offset_reg)
+        
         # Last upsample to produce detailed feature map for masking
         x = self.final_upsample(x)
     
@@ -274,16 +294,22 @@ class MLP(nn.Module):
         return x
 
 class SegmentationHead(nn.Module):
-    def __init__(self, n_classes=19):
+    def __init__(self, n_classes=19, hidden_dim=64):
         super(SegmentationHead, self).__init__()
 
         # Refinement for small objects
         self.refine = nn.Sequential(
             nn.Conv2d(n_classes, 64, kernel_size = 3, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(64, n_classes, kernel_size = 3, padding=1)
+            nn.BatchNorm2d(hidden_dim),
+            nn.GELU(),
+            nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, padding=1, dilation=2),
+            nn.BatchNorm2d(hidden_dim),
+            nn.GELU(),
+            nn.Conv2d(hidden_dim, n_classes, kernel_size = 3, padding=1),
         )
     
+        self.norm = nn.BatchNorm2d(n_classes)
+
     def forward(self, pred_logits, pred_masks, target_size):
 
         # Softmax for class logits
@@ -298,6 +324,9 @@ class SegmentationHead(nn.Module):
         # Refine segmentation map
         seg_map = self.refine(seg_map)
 
+        # Normalize
+        seg_map = self.norm(seg_map)
+        
         # Upscale to target size
         seg_map = F.interpolate(seg_map, size=target_size, mode='bilinear', align_corners=False)
 
@@ -308,22 +337,21 @@ class PositionEmbedding(nn.Module):
         super().__init__()
         assert embed_dim % 2 == 0, "Embed dim must be even"
         self.embed_dim = embed_dim // 2
-        self.temperature = temperature
-        
-        # Create frequency bands
-        dim_t = torch.arange(self.embed_dim, dtype=torch.float32)
-        self.register_buffer('dim_t', temperature ** (2 * torch.div(dim_t, 2, rounding_mode='floor') / self.embed_dim))
+        self.temperature = nn.Parameter(torch.tensor(temperature, dtype=torch.float32))
 
     def forward(self, x):
         B, _, H, W = x.shape
         
+        dim_t = torch.arange(self.embed_dim, dtype=torch.float32)
+        dim_t = self.temperature ** (2 * torch.div(dim_t, 2, rounding_mode='floor') / self.embed_dim)
+
         # Create normalized grid coordinates
         y_embed = torch.arange(H, device=x.device).float().unsqueeze(1).expand(H, W) / H
         x_embed = torch.arange(W, device=x.device).float().unsqueeze(0).expand(H, W) / W
         
         # Calculate positional encodings
-        pos_x = x_embed.reshape(-1, 1) / self.dim_t  # [H*W, embed_dim]
-        pos_y = y_embed.reshape(-1, 1) / self.dim_t
+        pos_x = x_embed.reshape(-1, 1) / dim_t  # [H*W, embed_dim]
+        pos_y = y_embed.reshape(-1, 1) / dim_t
         
         # Alternate sin/cos pattern
         pos_x = torch.stack([pos_x[:, 0::2].sin(), pos_x[:, 1::2].cos()], dim=2).flatten(1)
