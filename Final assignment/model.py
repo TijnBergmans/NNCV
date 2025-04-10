@@ -332,7 +332,7 @@ class SegmentationHead(nn.Module):
 
         return seg_map
 
-class PositionEmbedding(nn.Module):    
+class PositionEmbedding(nn.Module):
     def __init__(self, embed_dim=256, temperature=10000):
         super().__init__()
         assert embed_dim % 2 == 0, "Embed dim must be even"
