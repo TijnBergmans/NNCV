@@ -469,7 +469,7 @@ def main(args):
                     output_dir, 
                     "cityscapes_class_weights.pth"
                 ),
-        force_recompute=False    
+        force_recompute=True    
     ).to(device)
 
     # Define Dice metric
