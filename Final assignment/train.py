@@ -467,16 +467,16 @@ def main(args):
     ).to(device)
 
     # Define Dice metric
-    dice_metric = DiceLoss().to(device)
+    dice_metric = DiceScore().to(device)
 
     # Initialize EMA
-    ema = EMA(model, decay=0.999)
+    ema = EMA(model, decay=0.999).to(device)
 
     # Initialize gradient scaler
     scaler = GradScaler('cuda')
 
     # Early stopping
-    early_stopping = EarlyStopping(patience=args.early_stopping_patience, verbose=True)
+    early_stopping = EarlyStopping(patience=args.early_stopping_patience, verbose=True).to(device)
 
     # --- Pre Training ---
 
