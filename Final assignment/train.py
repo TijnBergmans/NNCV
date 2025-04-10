@@ -305,10 +305,10 @@ def main(args):
 
     coarse_transform = Compose([
         ToImage(),
-        Resize((1024,1024)),
+        Resize((512,512)),
         RandomHorizontalFlip(p=0.5),
         RandomResizedCrop(
-            size=(1024, 1024),
+            size=(512, 512),
             scale=(0.3, 1.0),
             ratio=(0.8, 1.25)),
         RandomApply([
@@ -334,10 +334,10 @@ def main(args):
 
     transform = Compose([
             ToImage(),
-            Resize((1024, 1024)),
+            Resize((512, 512)),
             RandomHorizontalFlip(p=0.5),
             RandomResizedCrop(
-                size=(1024, 1024), 
+                size=(512, 512), 
                 scale=(0.1, 2.0),
                 ratio=(0.5, 2.0)),
             RandomApply([
@@ -363,7 +363,7 @@ def main(args):
 
     val_transform = Compose([
         ToImage(),
-        Resize((1024, 1024)),
+        Resize((512, 512)),
         ToDtype(torch.float32, scale=True),
         Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
