@@ -343,7 +343,7 @@ class PositionEmbedding(nn.Module):
     def forward(self, x):
         B, _, H, W = x.shape
         
-        dim_t = torch.arange(self.embed_dim, dtype=torch.float32)
+        dim_t = torch.arange(self.embed_dim, dtype=torch.float32).to(x.device)
         dim_t = (self.temperature ** (2 * torch.div(dim_t, 2, rounding_mode='floor') / self.embed_dim)).to(x.device)
 
         # Create normalized grid coordinates
