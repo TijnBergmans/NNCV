@@ -50,7 +50,7 @@ class Config:
     IMG_SIZE = 512
 
 class SemanticSegmentationCriterion(nn.Module):
-    def __init__(self, class_weights=None, ignore_index=255, dice_weight=0.3, ce_weight=0.7, aux_weight=0.4, reg_weight=0.01, reg_loss=0, smooth=1e-5):
+    def __init__(self, model, class_weights=None, ignore_index=255, dice_weight=0.3, ce_weight=0.7, aux_weight=0.4, reg_weight=0.01, reg_loss=0, smooth=1e-5):
         super().__init__()
         
         self.ce_loss = nn.CrossEntropyLoss(weight=class_weights, ignore_index=ignore_index)
