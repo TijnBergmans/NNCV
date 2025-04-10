@@ -482,7 +482,7 @@ def main(args):
     scaler = GradScaler('cuda')
 
     # Early stopping
-    early_stopping = EarlyStopping(patience=args.early_stopping_patience, verbose=True).to(device)
+    early_stopping = EarlyStopping(patience=args.early_stopping_patience, verbose=True)
 
     # --- Pre Training ---
 
