@@ -544,8 +544,9 @@ def main(args):
             milestones=[Config.COARSE_WARMUP*len(coarse_dataloader)]
         )
 
+        checkpoints = 0.0
+
         print("Starting pre-training...")
-        wandb.log({"note": "Starting pre-training phase", "epoch": 0})
 
         for epoch in range(Config.COARSE_EPOCHS):
             print(f"Epoch {epoch+1:04}/{Config.COARSE_EPOCHS:04}")
@@ -619,18 +620,22 @@ def main(args):
                         wandb.log({
                             "pre_train_predictions": [wandb.Image(predictions_img)],
                             "pre_train_labels": [wandb.Image(labels_img)],
-                        }, step=(epoch + 1) * len(train_dataloader) - 1)
+                        }, step=(epoch + 1) * len(coarse_dataloader) - 1)
                 
                 coarse_valid_loss = sum(coarse_losses) / len(coarse_losses)
                 wandb.log({
                     "pre_train_valid_loss": coarse_valid_loss,
                     "DICE": dice
-                }, step=(epoch + 1) * len(train_dataloader) - 1)
+                }, step=(epoch + 1) * len(coarse_dataloader) - 1)
 
                 if (epoch + 1) % 5 == 0:
                     checkpoint_path = os.path.join(output_dir, f"pretrained_checkpoint_epoch_{epoch + 1}.pth")
                     torch.save(model.state_dict(), checkpoint_path)
-                    wandb.log({"checkpoint_saved": f"Epoch {epoch + 1}"}, step=(epoch + 1) * len(coarse_dataloader) - 1)
+                    checkpoints = checkpoints + 1
+                    wandb.log({
+                        "checkpoints": checkpoints
+                        }, 
+                        step=(epoch + 1) * len(coarse_dataloader) - 1)
 
 
                 # Early stopping check
@@ -655,12 +660,10 @@ def main(args):
         )
         
         print("Pre-training finished!")
-        wandb.log({"note": "Pre-training finished"})
 
     # --- Training ---
 
     print("Starting training...")
-    wandb.log({"note: Starting training"})
 
     # Give more weight to DICE loss for fine-tuning
     ce_weight = 0.5
@@ -881,7 +884,6 @@ def main(args):
                 break
         
     print("Training complete!")
-    wandb.log({"note": "Training complete!"})
 
     # Save the model
     torch.save(
