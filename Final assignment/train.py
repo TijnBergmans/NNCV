@@ -408,7 +408,15 @@ def main(args):
 
         coarse_dataset_full = wrap_dataset_for_transforms_v2(coarse_dataset_full)
 
-        coarse_train, coarse_val = random_split(coarse_dataset_full, [0.95, 0.05], generator=torch.Generator().manual_seed)
+        dataset_size = len(coarse_dataset_full)
+        train_size = int(dataset_size * 0.95)
+        val_size = dataset_size - train_size
+
+        coarse_train, coarse_val = random_split(
+            coarse_dataset_full, 
+            [train_size, val_size], 
+            generator=torch.Generator().manual_seed(args.seed)
+        )
 
         coarse_dataloader = DataLoader(
             coarse_train,
