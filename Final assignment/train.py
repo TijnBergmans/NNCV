@@ -114,16 +114,22 @@ class DiceScore(nn.Module):
         self.ignore = ignore_index
         
     def forward(self, preds, targets):
-        preds = preds.softmax(dim=1)
-        targets_onehot = F.one_hot(targets.clamp(0, self.n_classes-1), 
-                          num_classes=self.n_classes).permute(0,3,1,2).float()
-        
-        mask = (targets != self.ignore).unsqueeze(1).float()
-        intersection = (preds * targets_onehot * mask).sum((2,3))
-        union = (preds + targets).sum((2,3)) * mask.sum((2,3))
-        
-        dice = (2. * intersection + 1e-5) / (union + 1e-5)
-        return dice.mean()
+        # Apply softmax to get class probabilities for Dice loss
+        preds_softmax = F.softmax(preds, dim=1)  # [B, C, H, W]
+
+        # Create one-hot encoding of targets, ignoring ignored pixels
+        targets_onehot = F.one_hot(targets.clamp(0, self.n_classes - 1), num_classes=self.n_classes)  # [B, H, W, C]
+        targets_onehot = targets_onehot.permute(0, 3, 1, 2).float()  # [B, C, H, W]
+
+        # Mask out ignored pixels
+        valid_mask = (targets != self.ignore_index).unsqueeze(1).float()  # [B, 1, H, W]
+
+        # Compute Dice loss
+        intersection = (preds_softmax * targets_onehot * valid_mask).sum(dim=(2, 3))  # [B, C]
+        union = (preds_softmax * valid_mask).sum(dim=(2, 3)) + (targets_onehot * valid_mask).sum(dim=(2, 3))  # [B, C]
+        dice = ((2. * intersection + self.smooth) / (union + self.smooth)).mean()  # Scalar
+
+        return dice
 
 class EarlyStopping:
     def __init__(self, patience=10, min_delta=1e-5, verbose=False):
