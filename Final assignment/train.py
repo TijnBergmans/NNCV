@@ -7,12 +7,10 @@ import torch.nn as nn
 import numpy as np
 import torch.nn.functional as F
 from torchvision.ops import DeformConv2d
-from scipy.optimize import linear_sum_assignment
 from torch.optim import AdamW
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split
 from torchvision.datasets import Cityscapes, wrap_dataset_for_transforms_v2
 from torchvision.utils import make_grid
-from collections import defaultdict
 from torchvision.transforms.v2 import (
     Compose,
     Normalize,
@@ -28,7 +26,6 @@ from torchvision.transforms.v2 import (
 from torch.amp import GradScaler, autocast
 
 from model import Model as model_module
-from model import FaPNDecoder
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
@@ -118,11 +115,11 @@ class DiceScore(nn.Module):
         
     def forward(self, preds, targets):
         preds = preds.softmax(dim=1)
-        targets = F.one_hot(targets.clamp(0, self.n_classes-1), 
+        targets_onehot = F.one_hot(targets.clamp(0, self.n_classes-1), 
                           num_classes=self.n_classes).permute(0,3,1,2).float()
         
         mask = (targets != self.ignore).unsqueeze(1).float()
-        intersection = (preds * targets * mask).sum((2,3))
+        intersection = (preds * targets_onehot * mask).sum((2,3))
         union = (preds + targets).sum((2,3)) * mask.sum((2,3))
         
         dice = (2. * intersection + 1e-5) / (union + 1e-5)
@@ -401,7 +398,7 @@ def main(args):
     )
 
     if args.pre_train == 1:
-        coarse_dataset = Cityscapes(
+        coarse_dataset_full = Cityscapes(
             args.data_dir,
             split="train_extra",
             mode="coarse",
@@ -409,12 +406,21 @@ def main(args):
             transforms=coarse_transform
         )
 
-        coarse_dataset = wrap_dataset_for_transforms_v2(coarse_dataset)
+        coarse_dataset_full = wrap_dataset_for_transforms_v2(coarse_dataset_full)
+
+        coarse_train, coarse_val = random_split(coarse_dataset_full, [0.95, 0.05], generator=torch.Generator().manual_seed)
 
         coarse_dataloader = DataLoader(
-            coarse_dataset,
+            coarse_train,
             batch_size=args.batch_size,
             shuffle=True,
+            num_workers=args.num_workers
+        )
+
+        coarse_val_dataloader = DataLoader(
+            coarse_val,
+            batch_size=args.batch_size,
+            shuffle=False,
             num_workers=args.num_workers
         )
 
@@ -524,6 +530,7 @@ def main(args):
         )
 
         print("Starting pre-training...")
+        wandb.log({"note": "Starting pre-training phase", "epoch": 0})
 
         for epoch in range(Config.COARSE_EPOCHS):
             print(f"Epoch {epoch+1:04}/{Config.COARSE_EPOCHS:04}")
@@ -558,30 +565,72 @@ def main(args):
                     "pre_train_learning_rate": optimizer.param_groups[0]['lr'],
                     "pre_train_epoch": epoch + 1
                     }, 
-                    step = epoch * len(train_dataloader) + i
+                    step = epoch * len(coarse_dataloader) + i
                 )
 
-                if i == 0:
+            # Validation
+            model.eval()
+            with torch.no_grad():
+                coarse_losses = []
+                for i, (images, labels) in enumerate(coarse_val_dataloader):
+
+                    labels = convert_to_train_id(labels)  # Convert class IDs to train IDs
+                    images, labels = images.to(device), labels.to(device)
+
+                    labels = labels.long().squeeze(1)  # Remove channel dimension
+
+                    outputs = model(images)
+                    loss, _ = criterion(outputs, labels)
+                    dice = dice_metric(outputs['segmentation'], labels)
+                    coarse_losses.append(loss.item())
+
                     outputs = outputs['segmentation']
-                    predictions = outputs.softmax(1).argmax(1)
+                
+                    if i == 0:
+                        predictions = outputs.softmax(1).argmax(1)
 
-                    predictions = predictions.unsqueeze(1)
-                    labels = labels.unsqueeze(1)
+                        predictions = predictions.unsqueeze(1)
+                        labels = labels.unsqueeze(1)
 
-                    predictions = convert_train_id_to_color(predictions)
-                    labels = convert_train_id_to_color(labels)
+                        predictions = convert_train_id_to_color(predictions)
+                        labels = convert_train_id_to_color(labels)
 
-                    predictions_img = make_grid(predictions.cpu(), nrow=8)
-                    labels_img = make_grid(labels.cpu(), nrow=8)
+                        predictions_img = make_grid(predictions.cpu(), nrow=8)
+                        labels_img = make_grid(labels.cpu(), nrow=8)
 
-                    predictions_img = predictions_img.permute(1, 2, 0).numpy()
-                    labels_img = labels_img.permute(1, 2, 0).numpy()
+                        predictions_img = predictions_img.permute(1, 2, 0).numpy()
+                        labels_img = labels_img.permute(1, 2, 0).numpy()
 
-                    wandb.log({
-                        "pre_train_predictions": [wandb.Image(predictions_img)],
-                        "pre_train_labels": [wandb.Image(labels_img)],
-                    }, step=(epoch + 1) * len(train_dataloader) - 1)
+                        wandb.log({
+                            "pre_train_predictions": [wandb.Image(predictions_img)],
+                            "pre_train_labels": [wandb.Image(labels_img)],
+                        }, step=(epoch + 1) * len(train_dataloader) - 1)
+                
+                coarse_valid_loss = sum(coarse_losses) / len(coarse_losses)
+                wandb.log({
+                    "pre_train_valid_loss": coarse_valid_loss,
+                    "DICE": dice
+                }, step=(epoch + 1) * len(train_dataloader) - 1)
 
+                if (epoch + 1) % 5 == 0:
+                    checkpoint_path = os.path.join(output_dir, f"pretrained_checkpoint_epoch_{epoch + 1}.pth")
+                    torch.save(model.state_dict(), checkpoint_path)
+                    wandb.log({"checkpoint_saved": f"Epoch {epoch + 1}"}, step=(epoch + 1) * len(coarse_dataloader) - 1)
+
+
+                # Early stopping check
+                if early_stopping(coarse_valid_loss, model):
+                    print("Early stopping triggered")
+                    torch.save(
+                        model.state_dict(),
+                        os.path.join(
+                            output_dir,
+                            "pre_trained_model.pth"
+                        )
+                    )
+                    break
+        
+        # Save final model
         torch.save(
             model.state_dict(),
             os.path.join(
@@ -591,10 +640,12 @@ def main(args):
         )
         
         print("Pre-training finished!")
+        wandb.log({"note": "Pre-training finished"})
 
     # --- Training ---
 
     print("Starting training...")
+    wandb.log({"note: Starting training"})
 
     # Give more weight to DICE loss for fine-tuning
     ce_weight = 0.5
@@ -637,24 +688,12 @@ def main(args):
                     eta_min=1e-6
                 )
             ],
-            milestones=[Config.FINE_WARMUP*len(coarse_dataloader)]
+            milestones=[Config.FINE_WARMUP*len(train_dataloader)]
         )
     
     # Unfreeze Swin decoder
     for param in model.encoder.parameters():
             param.requires_grad = True
-
-    # Re-initialize offset generation layers
-    for layer in model.pixel_decoder.gen_offset:
-        for m in layer.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0.0)
-
-    # Unfreeze deformable convolutions after 5 epochs
-    for param in model.pixel_decoder.gen_offset.parameters():
-        param.requires_grad = True
 
     best_valid_loss = float('inf')
     best_valid_loss_ema = float('inf')
@@ -664,6 +703,27 @@ def main(args):
     for epoch in range(args.epochs):
         
         print(f"Epoch {epoch+1:04}/{args.epochs:04}")
+
+        # Unfreeze offset generators after 5 epochs
+        if epoch == 5:
+            # Re-initialize offset generation layers
+            with torch.no_grad():
+                for layer in model.pixel_decoder.gen_offset:
+                    for m in layer.modules():
+                        if isinstance(m, nn.Conv2d):
+                            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                            if m.bias is not None:
+                                nn.init.constant_(m.bias, 0.0)
+
+            # Unfreeze deformable convolutions after 5 epochs
+            for param in model.pixel_decoder.gen_offset.parameters():
+                param.requires_grad = True
+            
+            optimizer.add_param_group({
+                'params': [p for n,p in model.named_parameters() if 'gen_offset' in n],
+                'lr': Config.FINE_LR * 0.1,  # Start low
+                'weight_decay': Config.WEIGHT_DECAY
+            })
 
         # Training
         model.train()
@@ -806,6 +866,7 @@ def main(args):
                 break
         
     print("Training complete!")
+    wandb.log({"note": "Training complete!"})
 
     # Save the model
     torch.save(
