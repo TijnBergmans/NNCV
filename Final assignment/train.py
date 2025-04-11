@@ -108,10 +108,11 @@ class DiceLoss(nn.Module):
         return dice_loss
 
 class DiceScore(nn.Module):
-    def __init__(self, n_classes=19, ignore_index=255):
+    def __init__(self, n_classes=19, ignore_index=255, smooth=1e-5):
         super().__init__()
         self.n_classes = n_classes
-        self.ignore = ignore_index
+        self.ignore_index = ignore_index
+        self.smooth = smooth
         
     def forward(self, preds, targets):
         # Apply softmax to get class probabilities for Dice loss
