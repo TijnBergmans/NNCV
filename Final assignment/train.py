@@ -42,7 +42,7 @@ class Config:
     FINE_WARMUP = 10
 
     # Shared
-    BATCH_SIZE = 16
+    BATCH_SIZE = 24
     WEIGHT_DECAY = 0.01
     IMG_SIZE = 512
 
@@ -661,7 +661,7 @@ def main(args):
         
         print("Pre-training finished!")
 
-    pre_train_path = os.path.join(output_dir,"pre_trained_model.pth")
+    pre_train_path = os.path.join(output_dir,"pretrained_checkpoint_epoch_5.pth")
 
     # If the model is not pre trained, see if pre-trained weights are available
     if args.pre_train == 0 and os.path.exists(pre_train_path):
@@ -679,7 +679,7 @@ def main(args):
     # Give more weight to DICE loss for fine-tuning
     ce_weight = 0.5
     dice_weight = 0.5
-    aux_weight = 0.3
+    aux_weight = 0.4
         
     # Define the loss function
     criterion = SemanticSegmentationCriterion(
