@@ -233,7 +233,7 @@ def compute_class_weights(dataset, epsilon=1e-7):
 
     return weights
 
-def get_class_weights(train_dataset, weights_path='cityscapes_weights.pt', force_recompute=True):
+def get_class_weights(train_dataset, weights_path='cityscapes_weights.pt', force_recompute=False):
 
     if not force_recompute and os.path.exists(weights_path):
         print(f"Loading precomputed class weights from {weights_path}")
@@ -474,7 +474,7 @@ def main(args):
                     output_dir, 
                     "cityscapes_class_weights.pth"
                 ),
-        force_recompute=False    
+        force_recompute=True
     ).to(device)
 
     # Define Dice metric
