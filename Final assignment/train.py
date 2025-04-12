@@ -897,7 +897,7 @@ def main(args):
                     wandb.log({
                         "checkpoints": checkpoints
                         }, 
-                        step=(epoch + 1) * len(coarse_dataloader) - 1)
+                        step=(epoch + 1) * len(train_dataloader) - 1)
 
             # Early stopping check
             if early_stopping(valid_loss, model):
