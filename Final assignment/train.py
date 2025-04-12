@@ -37,8 +37,8 @@ class Config:
 
     # Training
     FINE_EPOCHS = 100
-    FINE_LR = 6e-5
-    SWIN_LR = 3e-5
+    FINE_LR = 3e-4
+    SWIN_LR = 1e-4
     FINE_WARMUP = 10
 
     # Shared
@@ -724,6 +724,18 @@ def main(args):
     for param in model.encoder.parameters():
             param.requires_grad = True
 
+    # Re-initialize offset generation layers
+    for layer in model.pixel_decoder.gen_offset:
+        for m in layer.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0.0)
+
+    # Unfreeze deformable convolutions
+    for param in model.pixel_decoder.gen_offset.parameters():
+        param.requires_grad = True
+
     best_valid_loss = float('inf')
     best_valid_loss_ema = float('inf')
     current_best_model_path = None
@@ -732,45 +744,6 @@ def main(args):
     for epoch in range(args.epochs):
         
         print(f"Epoch {epoch+1:04}/{args.epochs:04}")
-
-        # Unfreeze offset generators after 5 epochs
-        if epoch == 0:
-            # Re-initialize offset generation layers
-            with torch.no_grad():
-                for layer in model.pixel_decoder.gen_offset:
-                    for m in layer.modules():
-                        if isinstance(m, nn.Conv2d):
-                            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                            if m.bias is not None:
-                                nn.init.constant_(m.bias, 0.0)
-
-            # Unfreeze deformable convolutions after 5 epochs
-            for param in model.pixel_decoder.gen_offset.parameters():
-                param.requires_grad = True
-            
-            # Get the parameters
-            offset_params = [p for n, p in model.named_parameters() if 'gen_offset' in n and p.requires_grad]
-
-            # Only add those NOT already in the optimizer
-            existing_params = set()
-            for group in optimizer.param_groups:
-                for p in group['params']:
-                    existing_params.add(p)
-
-            new_offset_params = [p for p in offset_params if p not in existing_params]
-
-            if new_offset_params:
-                optimizer.add_param_group({
-                    'params': new_offset_params,
-                    'lr': Config.FINE_LR * 0.1,
-                    'weight_decay': Config.WEIGHT_DECAY,
-                    'tag': 'gen_offset'
-                })
-                print(f"→ Added {len(new_offset_params)} offset parameters to optimizer.")
-            else:
-                print("→ Offset parameters already in optimizer — skipping re-add.")
-
-            print("DeformConv2d layers unfrozen successfully")
 
         # Training
         model.train()
