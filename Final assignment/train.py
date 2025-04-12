@@ -734,7 +734,7 @@ def main(args):
         print(f"Epoch {epoch+1:04}/{args.epochs:04}")
 
         # Unfreeze offset generators after 5 epochs
-        if epoch == 5:
+        if epoch == 0:
             # Re-initialize offset generation layers
             with torch.no_grad():
                 for layer in model.pixel_decoder.gen_offset:
@@ -748,11 +748,29 @@ def main(args):
             for param in model.pixel_decoder.gen_offset.parameters():
                 param.requires_grad = True
             
-            optimizer.add_param_group({
-                'params': [p for n,p in model.named_parameters() if 'gen_offset' in n],
-                'lr': Config.FINE_LR * 0.1,
-                'weight_decay': Config.WEIGHT_DECAY
-            })
+            # Get the parameters
+            offset_params = [p for n, p in model.named_parameters() if 'gen_offset' in n and p.requires_grad]
+
+            # Only add those NOT already in the optimizer
+            existing_params = set()
+            for group in optimizer.param_groups:
+                for p in group['params']:
+                    existing_params.add(p)
+
+            new_offset_params = [p for p in offset_params if p not in existing_params]
+
+            if new_offset_params:
+                optimizer.add_param_group({
+                    'params': new_offset_params,
+                    'lr': Config.FINE_LR * 0.1,
+                    'weight_decay': Config.WEIGHT_DECAY,
+                    'tag': 'gen_offset'
+                })
+                print(f"→ Added {len(new_offset_params)} offset parameters to optimizer.")
+            else:
+                print("→ Offset parameters already in optimizer — skipping re-add.")
+
+            print("DeformConv2d layers unfrozen successfully")
 
         # Training
         model.train()
