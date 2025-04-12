@@ -661,6 +661,14 @@ def main(args):
         
         print("Pre-training finished!")
 
+    pre_train_path = os.path.join(output_dir,"pre_trained_model.pth")
+
+    # If the model is not pre trained, see if pre-trained weights are available
+    if args.pre_train == 0 and os.path.exists():
+        print(f"Loading precomputed class weights from {pre_train_path}")
+        weights = torch.load(pre_train_path)
+        print("Pre-trained weights loaded")
+
     # --- Training ---
 
     print("Starting training...")
@@ -696,7 +704,7 @@ def main(args):
             [
                 torch.optim.lr_scheduler.LinearLR(
                     optimizer,
-                    start_factor=0,
+                    start_factor=1e-6,
                     end_factor=1.0,
                     total_iters=Config.FINE_WARMUP*len(train_dataloader)
                 ),
@@ -739,7 +747,7 @@ def main(args):
             
             optimizer.add_param_group({
                 'params': [p for n,p in model.named_parameters() if 'gen_offset' in n],
-                'lr': Config.FINE_LR * 0.1,  # Start low
+                'lr': Config.FINE_LR * 0.1,
                 'weight_decay': Config.WEIGHT_DECAY
             })
 
@@ -844,6 +852,8 @@ def main(args):
                 "DICE": dice_val
             }, step=(epoch + 1) * len(train_dataloader) - 1)
 
+            # Checkpointing
+
             if valid_loss < best_valid_loss:
                 best_valid_loss = valid_loss
                 if current_best_model_path:
@@ -863,6 +873,28 @@ def main(args):
                     f"best_model_ema-epoch={epoch:04}-val_loss={valid_loss:04}.pth"
                 )
                 torch.save(ema.shadow, current_best_model_ema_path)
+            
+            # Save training state once every 5 epochs
+            if (epoch + 1) % 5 == 0:
+                    checkpoint_path = os.path.join(output_dir, f"train_checkpoint_epoch_{epoch + 1}.pth")
+                    
+                    torch.save({
+                        'epoch': epoch + 1,
+                        'model_state_dict': model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'scheduler_state_dict': lr_scheduler.state_dict(),
+                        'scaler_state_dict': scaler.state_dict(),
+                        'checkpoints': checkpoints
+                        }, 
+                        checkpoint_path
+                    )
+                    
+                    checkpoints = checkpoints + 1
+                    
+                    wandb.log({
+                        "checkpoints": checkpoints
+                        }, 
+                        step=(epoch + 1) * len(coarse_dataloader) - 1)
 
             # Early stopping check
             if early_stopping(valid_loss, model):

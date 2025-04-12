@@ -11,4 +11,4 @@ python3 train.py \
     --checkpoint-interval 5 \
     --early-stopping-patience 10 \
     --augmentation "lsj" \
-    --pre-train 1 \
+    --pre-train 0 \
