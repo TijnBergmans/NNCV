@@ -7,7 +7,7 @@ python3 train.py \
     --lr 6e-5 \
     --num-workers 10 \
     --seed 42 \
-    --experiment-id "Training Half-res" \
+    --experiment-id "(Pre) Training Half-res" \
     --checkpoint-interval 5 \
     --early-stopping-patience 10 \
     --augmentation "lsj" \

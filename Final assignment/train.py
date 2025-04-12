@@ -666,12 +666,15 @@ def main(args):
     # If the model is not pre trained, see if pre-trained weights are available
     if args.pre_train == 0 and os.path.exists(pre_train_path):
         print(f"Loading precomputed class weights from {pre_train_path}")
-        weights = torch.load(pre_train_path)
+        weights = torch.load(pre_train_path, map_location=device)
+        model.load_state_dict(weights)
         print("Pre-trained weights loaded")
 
     # --- Training ---
 
     print("Starting training...")
+
+    checkpoints = 0.0
 
     # Give more weight to DICE loss for fine-tuning
     ce_weight = 0.5
