@@ -372,7 +372,7 @@ def main(args):
         Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
 
-    # Load the dataset and make a split for training and validation
+    # Load the dataset and make a manual split for training and validation
     train_dataset = Cityscapes(
         args.data_dir, 
         split="train", 
@@ -664,7 +664,7 @@ def main(args):
     pre_train_path = os.path.join(output_dir,"pre_trained_model.pth")
 
     # If the model is not pre trained, see if pre-trained weights are available
-    if args.pre_train == 0 and os.path.exists():
+    if args.pre_train == 0 and os.path.exists(pre_train_path):
         print(f"Loading precomputed class weights from {pre_train_path}")
         weights = torch.load(pre_train_path)
         print("Pre-trained weights loaded")
@@ -717,7 +717,7 @@ def main(args):
             milestones=[Config.FINE_WARMUP*len(train_dataloader)]
         )
     
-    # Unfreeze Swin decoder
+    # Unfreeze Swin encoder
     for param in model.encoder.parameters():
             param.requires_grad = True
 
