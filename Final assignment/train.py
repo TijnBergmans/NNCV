@@ -36,14 +36,14 @@ class Config:
     COARSE_WARMUP = 3
 
     # Training
-    FINE_EPOCHS = 100
-    FINE_LR = 3e-4
-    SWIN_LR = 1e-4
+    FINE_EPOCHS = 150
+    FINE_LR = 6e-5
+    SWIN_LR = 3e-5
     FINE_WARMUP = 10
 
     # Shared
-    BATCH_SIZE = 24
-    WEIGHT_DECAY = 0.01
+    BATCH_SIZE = 32
+    WEIGHT_DECAY = 0.05
     IMG_SIZE = 512
 
 class SemanticSegmentationCriterion(nn.Module):
@@ -233,7 +233,7 @@ def compute_class_weights(dataset, epsilon=1e-7):
 
     return weights
 
-def get_class_weights(train_dataset, weights_path='cityscapes_weights.pt', force_recompute=False):
+def get_class_weights(train_dataset, weights_path='cityscapes_weights.pt', force_recompute=True):
 
     if not force_recompute and os.path.exists(weights_path):
         print(f"Loading precomputed class weights from {weights_path}")
@@ -677,8 +677,8 @@ def main(args):
     checkpoints = 0.0
 
     # Give more weight to DICE loss for fine-tuning
-    ce_weight = 0.5
-    dice_weight = 0.5
+    ce_weight = 0.7
+    dice_weight = 0.3
     aux_weight = 0.4
         
     # Define the loss function
