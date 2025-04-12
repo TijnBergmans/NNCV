@@ -37,12 +37,12 @@ class Config:
 
     # Training
     FINE_EPOCHS = 150
-    FINE_LR = 6e-5
-    SWIN_LR = 3e-5
-    FINE_WARMUP = 10
+    FINE_LR = 8e-5
+    SWIN_LR = 2e-5
+    FINE_WARMUP = 15
 
     # Shared
-    BATCH_SIZE = 32
+    BATCH_SIZE = 24
     WEIGHT_DECAY = 0.05
     IMG_SIZE = 512
 
@@ -474,7 +474,7 @@ def main(args):
                     output_dir, 
                     "cityscapes_class_weights.pth"
                 ),
-        force_recompute=True
+        force_recompute=False
     ).to(device)
 
     # Define Dice metric
