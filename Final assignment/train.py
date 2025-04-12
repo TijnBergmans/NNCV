@@ -37,12 +37,12 @@ class Config:
 
     # Training
     FINE_EPOCHS = 150
-    FINE_LR = 8e-5
-    SWIN_LR = 2e-5
+    FINE_LR = 1.5e-4
+    SWIN_LR = 1.5e-5
     FINE_WARMUP = 15
 
     # Shared
-    BATCH_SIZE = 24
+    BATCH_SIZE = 16
     WEIGHT_DECAY = 0.05
     IMG_SIZE = 512
 
@@ -725,16 +725,16 @@ def main(args):
             param.requires_grad = True
 
     # Re-initialize offset generation layers
-    for layer in model.pixel_decoder.gen_offset:
-        for m in layer.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0.0)
+    #for layer in model.pixel_decoder.gen_offset:
+    #    for m in layer.modules():
+    #        if isinstance(m, nn.Conv2d):
+    #            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+    #            if m.bias is not None:
+    #                nn.init.constant_(m.bias, 0.0)
 
     # Unfreeze deformable convolutions
-    for param in model.pixel_decoder.gen_offset.parameters():
-        param.requires_grad = True
+    #for param in model.pixel_decoder.gen_offset.parameters():
+    #    param.requires_grad = True
 
     best_valid_loss = float('inf')
     best_valid_loss_ema = float('inf')
