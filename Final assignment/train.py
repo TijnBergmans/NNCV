@@ -490,7 +490,6 @@ def main(args):
         
         # Define the loss function
         criterion = SemanticSegmentationCriterion(
-            model=model,
             class_weights=class_weights, 
             ce_weight=ce_weight, 
             dice_weight=dice_weight,
@@ -675,7 +674,6 @@ def main(args):
         
     # Define the loss function
     criterion = SemanticSegmentationCriterion(
-        model=model,
         class_weights=class_weights, 
         ce_weight=ce_weight, 
         dice_weight=dice_weight,
