@@ -29,35 +29,23 @@ from model import Model as model_module
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
-class Config:
-    # Pre-training
-    COARSE_EPOCHS = 30
-    COARSE_LR = 3e-5
-    COARSE_WARMUP = 3
-
-    # Training
-    FINE_EPOCHS = 150
-    FINE_LR = 1.5e-4
-    SWIN_LR = 1.5e-5
-    FINE_WARMUP = 15
-
-    # Shared
-    BATCH_SIZE = 16
-    WEIGHT_DECAY = 0.05
-    IMG_SIZE = 512
-
 class SemanticSegmentationCriterion(nn.Module):
-    def __init__(self, model, class_weights=None, ignore_index=255, dice_weight=0.3, ce_weight=0.7, aux_weight=0.4, reg_weight=0.01, reg_loss=0, smooth=1e-5):
+    def __init__(self, n_classes=19, class_weights=None, ignore_index=255, dice_weight=0.3, ce_weight=0.7, bce_weight=0.7, aux_weight=0.4, reg_weight=0.01, reg_loss=0, smooth=1e-5):
         super().__init__()
         
+        self.n_classes = n_classes
         self.ce_loss = nn.CrossEntropyLoss(weight=class_weights, ignore_index=ignore_index)
+        #self.bce_loss = nn.BCEWithLogitsLoss(weight=class_weights)
         self.dice_loss = DiceLoss(smooth=smooth)
-        self.weight = {'ce':ce_weight, 'dice':dice_weight, 'reg':reg_weight,'aux':aux_weight}
+        self.weight = {'ce':ce_weight, 'bce':bce_weight, 'dice':dice_weight, 'reg':reg_weight,'aux':aux_weight}
         self.reg_loss = reg_loss
 
     def forward(self, out, label):
         
         seg_map = out['segmentation']
+
+        #label_onehot = F.one_hot(label.clamp(0, self.n_classes - 1), num_classes=self.n_classes)  # [B, H, W, C]
+        #label_onehot = label_onehot.permute(0, 3, 1, 2).float()  # [B, C, H, W]
 
         # Process auxiliary losses if necessary
         aux_loss = 0
@@ -65,8 +53,10 @@ class SemanticSegmentationCriterion(nn.Module):
             for aux in out['aux_segmentation']:
                 aux_loss += self.ce_loss(aux, label) * self.weight['ce'] * self.weight['aux']
                 aux_loss += self.dice_loss(aux, label) * self.weight['dice'] * self.weight['aux']
-        
+                #aux_loss += self.bce_loss(aux, label_onehot) * self.weight['bce'] * self.weight['aux']
+
         ce_loss = self.ce_loss(seg_map, label) * self.weight['ce']
+        #bce_loss = self.bce_loss(seg_map, label_onehot) * self.weight['bce']
         dice_loss = self.dice_loss(seg_map, label) * self.weight['dice']
         reg_loss = self.reg_loss * self.weight['reg']
         aux_loss = aux_loss/len(out['aux_segmentation'])
@@ -256,29 +246,41 @@ def get_args_parser():
     parser.add_argument("--num-workers", type=int, default=10, help="Number of workers for data loaders")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     parser.add_argument("--experiment-id", type=str, default="mask2former training", help="Experiment ID for Weights & Biases")
-    parser.add_argument("--checkpoint-interval", type=int, default=5, help="Save checkpoint every N epochs")
     parser.add_argument("--early-stopping-patience", type=int, default=10, help="Patience for early stopping")
-    parser.add_argument("--augmentation", type=str, default="standard", choices=["standard", "lsj"], help="Augmentation stragety")
     parser.add_argument("--pre-train", type=int, default=0, help="Pre-training")
+    parser.add_argument("--load-weights", type=int, default=0, help="Load pre-trained weights")
+    parser.add_argument("--warmup", type=int, default=10, help="Warmup epochs")
+    parser.add_argument("--weight-decay", type=float, default=0.05, help="Weight decay")
+    parser.add_argument("--pre-epochs", type=int, default=30, help="Pre-training epochs")
+
 
     return parser
 
-def init_weights(m):
+def initialize_transformer_decoder(m):
     if isinstance(m, nn.Linear):
-        nn.init.trunc_normal_(m.weight, std=0.02)
+        nn.init.xavier_uniform_(m.weight)
         if m.bias is not None:
             nn.init.zeros_(m.bias)
-    elif isinstance(m, nn.Conv2d):
+    elif isinstance(m, nn.MultiheadAttention):
+        nn.init.xavier_uniform_(m.in_proj_weight)
+        if m.in_proj_bias is not None:
+            nn.init.zeros_(m.in_proj_bias)
+        nn.init.xavier_uniform_(m.out_proj.weight)
+        if m.out_proj.bias is not None:
+            nn.init.zeros_(m.out_proj.bias)
+
+def initialize_pixel_decoder(m):
+    if isinstance(m, nn.Conv2d):
         if "offset" in str(m):  # Special case for deformable conv offsets
             nn.init.zeros_(m.weight)
-            nn.init.zeros_(m.bias)
+            if m.bias is not None:
+                nn.init.zeros_(m.bias)
         else:
-            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-    elif isinstance(m, nn.LayerNorm):
-        nn.init.ones_(m.weight)
-        nn.init.zeros_(m.bias)
-    elif isinstance(m, nn.Embedding):  # Query embeddings
-        nn.init.uniform_(m.weight, -0.08, 0.08)
+            nn.init.xavier_uniform_(m.weight)
+            if m.bias is not None:
+                nn.init.zeros_(m.bias)
+    if isinstance(m, DeformConv2d):
+        nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='leaky_relu', a=0.1)
 
 def main(args):
 
@@ -452,20 +454,8 @@ def main(args):
         buffer.data = buffer.data.to(device)
 
     # Initialize weights
-    model.apply(init_weights)
-
-    # Carefully handle deformable Convs
-    for m in model.modules():
-        if isinstance(m, DeformConv2d):
-            nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='leaky_relu', a=0.1)
-
-    # Make sure to initialize offset generation layers to 0
-    for layer in model.pixel_decoder.gen_offset:
-        for m in layer.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.constant_(m.weight, 0.0)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0.0)
+    model.transformer_decoder.apply(initialize_transformer_decoder)
+    model.pixel_decoder.apply(initialize_pixel_decoder)
 
     # Load class weights
     class_weights = get_class_weights(
@@ -518,12 +508,12 @@ def main(args):
 
         # Set LR for other modules
         optimizer = AdamW([
-            {'params': model.pixel_decoder.parameters(), 'lr': Config.COARSE_LR},
-            {'params': model.transformer_decoder.parameters(), 'lr': Config.COARSE_LR},
-            {'params': model.fuse_feat.parameters(), 'lr': Config.COARSE_LR},
-            {'params': model.seg_head.parameters(), 'lr': Config.COARSE_LR}
+            {'params': model.pixel_decoder.parameters(), 'lr': args.lr},
+            {'params': model.transformer_decoder.parameters(), 'lr': args.lr},
+            {'params': model.fuse_feat.parameters(), 'lr': args.lr},
+            {'params': model.seg_head.parameters(), 'lr': args.lr}
             ],
-            weight_decay=Config.WEIGHT_DECAY
+            weight_decay=args.weight_decay
         )
 
         lr_scheduler = torch.optim.lr_scheduler.SequentialLR(
@@ -533,23 +523,23 @@ def main(args):
                     optimizer,
                     start_factor=1e-6,
                     end_factor=1.0,
-                    total_iters=Config.COARSE_WARMUP*len(coarse_dataloader)
+                    total_iters=args.warmup*len(coarse_dataloader)
                 ),
                 torch.optim.lr_scheduler.CosineAnnealingLR(
                     optimizer,
-                    T_max=(Config.COARSE_EPOCHS - Config.COARSE_WARMUP)*len(coarse_dataloader),
+                    T_max=(args.warmup - args.warmup)*len(coarse_dataloader),
                     eta_min=1e-6
                 )
             ],
-            milestones=[Config.COARSE_WARMUP*len(coarse_dataloader)]
+            milestones=[args.warmup*len(coarse_dataloader)]
         )
 
         checkpoints = 0.0
 
         print("Starting pre-training...")
 
-        for epoch in range(Config.COARSE_EPOCHS):
-            print(f"Epoch {epoch+1:04}/{Config.COARSE_EPOCHS:04}")
+        for epoch in range(args.pre_epochs):
+            print(f"Epoch {epoch+1:04}/{args.pre_epochs:04}")
             
             model.train()
 
@@ -661,14 +651,16 @@ def main(args):
         
         print("Pre-training finished!")
 
-    pre_train_path = os.path.join(output_dir,"pretrained_checkpoint_epoch_5.pth")
+    if args.load_weights == 1:
 
-    # If the model is not pre trained, see if pre-trained weights are available
-    if args.pre_train == 0 and os.path.exists(pre_train_path):
-        print(f"Loading precomputed class weights from {pre_train_path}")
-        weights = torch.load(pre_train_path, map_location=device)
-        model.load_state_dict(weights)
-        print("Pre-trained weights loaded")
+        pre_train_path = os.path.join(output_dir,"pretrained_checkpoint_epoch_5.pth")
+
+        # If the model is not pre trained, see if pre-trained weights are available
+        if args.pre_train == 0 and os.path.exists(pre_train_path):
+            print(f"Loading precomputed class weights from {pre_train_path}")
+            weights = torch.load(pre_train_path, map_location=device)
+            model.load_state_dict(weights)
+            print("Pre-trained weights loaded")
 
     # --- Training ---
 
@@ -677,8 +669,8 @@ def main(args):
     checkpoints = 0.0
 
     # Give more weight to DICE loss for fine-tuning
-    ce_weight = 0.7
-    dice_weight = 0.3
+    ce_weight = 2.0
+    dice_weight = 5.0
     aux_weight = 0.4
         
     # Define the loss function
@@ -693,13 +685,13 @@ def main(args):
 
     # Set new LR
     optimizer = AdamW([
-        {'params': model.encoder.parameters(), 'lr': Config.SWIN_LR},
-        {'params': model.pixel_decoder.parameters(), 'lr': Config.FINE_LR},
-        {'params': model.transformer_decoder.parameters(), 'lr': Config.FINE_LR},
-        {'params': model.fuse_feat.parameters(), 'lr': Config.FINE_LR},
-        {'params': model.seg_head.parameters(), 'lr': Config.FINE_LR},
+        {'params': model.encoder.parameters(), 'lr': 0.1*args.lr},
+        {'params': model.pixel_decoder.parameters(), 'lr': args.lr},
+        {'params': model.transformer_decoder.parameters(), 'lr': args.lr},
+        {'params': model.fuse_feat.parameters(), 'lr': args.lr},
+        {'params': model.seg_head.parameters(), 'lr': args.lr},
         ],
-        weight_decay=Config.WEIGHT_DECAY    
+        weight_decay=args.weight_decay   
     )
 
     lr_scheduler = torch.optim.lr_scheduler.SequentialLR(
@@ -709,32 +701,25 @@ def main(args):
                     optimizer,
                     start_factor=1e-6,
                     end_factor=1.0,
-                    total_iters=Config.FINE_WARMUP*len(train_dataloader)
+                    total_iters=args.warmup*len(train_dataloader)
                 ),
                 torch.optim.lr_scheduler.CosineAnnealingLR(
                     optimizer,
-                    T_max=(Config.FINE_EPOCHS - Config.FINE_WARMUP)*len(train_dataloader),
+                    T_max=(args.epochs - args.warmup)*len(train_dataloader),
                     eta_min=1e-6
                 )
             ],
-            milestones=[Config.FINE_WARMUP*len(train_dataloader)]
+            milestones=[args.warmup*len(train_dataloader)]
         )
     
     # Unfreeze Swin encoder
     for param in model.encoder.parameters():
             param.requires_grad = True
 
-    # Re-initialize offset generation layers
-    #for layer in model.pixel_decoder.gen_offset:
-    #    for m in layer.modules():
-    #        if isinstance(m, nn.Conv2d):
-    #            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-    #            if m.bias is not None:
-    #                nn.init.constant_(m.bias, 0.0)
-
+    
     # Unfreeze deformable convolutions
-    #for param in model.pixel_decoder.gen_offset.parameters():
-    #    param.requires_grad = True
+    for param in model.pixel_decoder.gen_offset.parameters():
+        param.requires_grad = True
 
     best_valid_loss = float('inf')
     best_valid_loss_ema = float('inf')
