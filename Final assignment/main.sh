@@ -7,7 +7,7 @@ python3 train.py \
     --lr 1e-4 \
     --num-workers 10 \
     --seed 42 \
-    --experiment-id "(Pre) Training Half-res" \
+    --experiment-id "Hybrid model training" \
     --early-stopping-patience 10 \
     --pre-train 0 \
     --load-weight 0\
