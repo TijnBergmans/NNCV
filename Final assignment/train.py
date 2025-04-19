@@ -452,7 +452,7 @@ def main(args):
             with autocast(device_type='cuda', dtype=torch.float16):
                 outputs = model(images)
                 loss, loss_dict = criterion(outputs, labels)
-                dice = dice_metric(outputs['segmentation'], labels)
+                dice = dice_metric(outputs, labels)
 
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
@@ -493,22 +493,20 @@ def main(args):
                 ema.apply_shadow()
                 outputs = model(images)
                 loss, _ = criterion(outputs, labels)
-                dice_ema = dice_metric(outputs['segmentation'], labels)
+                dice_ema = dice_metric(outputs, labels)
                 losses_ema.append(loss.item())
 
                 # Restore EMA
                 ema.restore()
                 outputs = model(images)
                 loss, _ = criterion(outputs, labels)
-                dice = dice_metric(outputs['segmentation'], labels)
+                dice = dice_metric(outputs, labels)
                 losses.append(loss.item())
 
                 dice_val = {
                     "val_dice": dice,
                     "val_dice_ema": dice_ema
                 }
-
-                outputs = outputs['segmentation']
             
                 if i == 0:
                     predictions = outputs.softmax(1).argmax(1)
