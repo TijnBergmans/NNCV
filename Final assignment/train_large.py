@@ -25,31 +25,48 @@ from torchvision.transforms.v2 import (
 )
 from torch.amp import GradScaler, autocast
 
-from model import Model as model_module
+from model_large import Model as model_module
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 class SemanticSegmentationCriterion(nn.Module):
-    def __init__(self, n_classes=19, class_weights=None, ignore_index=255, dice_weight=0.3, ce_weight=0.7, reg_weight=0.01, reg_loss=0, smooth=1e-5):
+    def __init__(self, n_classes=19, class_weights=None, ignore_index=255, dice_weight=0.3, ce_weight=0.7, bce_weight=0.7, aux_weight=0.4, reg_weight=0.01, reg_loss=0, smooth=1e-5):
         super().__init__()
         
         self.n_classes = n_classes
         self.ce_loss = nn.CrossEntropyLoss(weight=class_weights, ignore_index=ignore_index)
+        #self.bce_loss = nn.BCEWithLogitsLoss(weight=class_weights)
         self.dice_loss = DiceLoss(smooth=smooth)
-        self.weight = {'ce':ce_weight, 'dice':dice_weight, 'reg':reg_weight}
+        self.weight = {'ce':ce_weight, 'bce':bce_weight, 'dice':dice_weight, 'reg':reg_weight,'aux':aux_weight}
         self.reg_loss = reg_loss
 
-    def forward(self, seg_map, label):
+    def forward(self, out, label):
+        
+        seg_map = out['segmentation']
+
+        #label_onehot = F.one_hot(label.clamp(0, self.n_classes - 1), num_classes=self.n_classes)  # [B, H, W, C]
+        #label_onehot = label_onehot.permute(0, 3, 1, 2).float()  # [B, C, H, W]
+
+        # Process auxiliary losses if necessary
+        aux_loss = 0
+        if 'aux_segmentation' in out:
+            for aux in out['aux_segmentation']:
+                aux_loss += self.ce_loss(aux, label) * self.weight['ce'] * self.weight['aux']
+                aux_loss += self.dice_loss(aux, label) * self.weight['dice'] * self.weight['aux']
+                #aux_loss += self.bce_loss(aux, label_onehot) * self.weight['bce'] * self.weight['aux']
 
         ce_loss = self.ce_loss(seg_map, label) * self.weight['ce']
+        #bce_loss = self.bce_loss(seg_map, label_onehot) * self.weight['bce']
         dice_loss = self.dice_loss(seg_map, label) * self.weight['dice']
         reg_loss = self.reg_loss * self.weight['reg']
+        aux_loss = aux_loss/len(out['aux_segmentation'])
         
         # Compute losses
         loss = {
             'ce_loss': ce_loss,
             'dice_loss': dice_loss,
             'reg_loss': reg_loss,
+            'aux_loss': aux_loss
         }
         
         return sum(loss.values()), loss
@@ -239,6 +256,19 @@ def get_args_parser():
 
     return parser
 
+def initialize_transformer_decoder(m):
+    if isinstance(m, nn.Linear):
+        nn.init.xavier_uniform_(m.weight)
+        if m.bias is not None:
+            nn.init.zeros_(m.bias)
+    elif isinstance(m, nn.MultiheadAttention):
+        nn.init.xavier_uniform_(m.in_proj_weight)
+        if m.in_proj_bias is not None:
+            nn.init.zeros_(m.in_proj_bias)
+        nn.init.xavier_uniform_(m.out_proj.weight)
+        if m.out_proj.bias is not None:
+            nn.init.zeros_(m.out_proj.bias)
+
 def initialize_pixel_decoder(m):
     if isinstance(m, nn.Conv2d):
         if "offset" in str(m):  # Special case for deformable conv offsets
@@ -278,6 +308,35 @@ def main(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Define the transforms to apply to the data
+
+    coarse_transform = Compose([
+        ToImage(),
+        Resize((512,512)),
+        RandomHorizontalFlip(p=0.5),
+        RandomResizedCrop(
+            size=(512, 512),
+            scale=(0.3, 1.0),
+            ratio=(0.8, 1.25)),
+        RandomApply([
+            ColorJitter(
+                brightness=0.3,
+                contrast=0.3,
+                hue=0.1)],
+            p=0.5
+        ),
+        RandomApply([
+            GaussianBlur(
+                kernel_size=3,
+                sigma=(0.1, 1.0)
+            )],
+            p=0.1
+        ),
+        ToDtype(torch.float32, scale=True),
+        Normalize(
+                mean=[0.485, 0.456, 0.406], 
+                std=[0.229, 0.224, 0.225]
+        )
+    ])
 
     transform = Compose([
             ToImage(),
@@ -347,6 +406,41 @@ def main(args):
         num_workers=args.num_workers
     )
 
+    if args.pre_train == 1:
+        coarse_dataset_full = Cityscapes(
+            args.data_dir,
+            split="train_extra",
+            mode="coarse",
+            target_type="semantic",
+            transforms=coarse_transform
+        )
+
+        coarse_dataset_full = wrap_dataset_for_transforms_v2(coarse_dataset_full)
+
+        dataset_size = len(coarse_dataset_full)
+        train_size = int(dataset_size * 0.95)
+        val_size = dataset_size - train_size
+
+        coarse_train, coarse_val = random_split(
+            coarse_dataset_full, 
+            [train_size, val_size], 
+            generator=torch.Generator().manual_seed(args.seed)
+        )
+
+        coarse_dataloader = DataLoader(
+            coarse_train,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=args.num_workers
+        )
+
+        coarse_val_dataloader = DataLoader(
+            coarse_val,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.num_workers
+        )
+
     # Define the model
     model = model_module(
         in_channels=3,  # RGB images
@@ -360,6 +454,7 @@ def main(args):
         buffer.data = buffer.data.to(device)
 
     # Initialize weights
+    model.transformer_decoder.apply(initialize_transformer_decoder)
     model.pixel_decoder.apply(initialize_pixel_decoder)
 
     # Load class weights
@@ -384,6 +479,188 @@ def main(args):
     # Early stopping
     early_stopping = EarlyStopping(patience=args.early_stopping_patience, verbose=True)
 
+    # --- Pre Training ---
+
+    if args.pre_train == 1:
+
+        # Give less weight to DICE loss due to label noise
+        ce_weight = 0.9
+        dice_weight = 0.1
+        aux_weight = 0.2
+        
+        # Define the loss function
+        criterion = SemanticSegmentationCriterion(
+            class_weights=class_weights, 
+            ce_weight=ce_weight, 
+            dice_weight=dice_weight,
+            aux_weight=aux_weight,
+            reg_loss=model.pixel_decoder.offset_reg_loss
+        ).to(device)
+
+        # Freeze Swin
+        for param in model.encoder.parameters():
+            param.requires_grad = False
+
+        # Freeze deformable convolutions to regular convolutions
+        for param in model.pixel_decoder.gen_offset.parameters():
+            param.requires_grad = False
+
+        # Set LR for other modules
+        optimizer = AdamW([
+            {'params': model.pixel_decoder.parameters(), 'lr': args.lr},
+            {'params': model.transformer_decoder.parameters(), 'lr': args.lr},
+            {'params': model.fuse_feat.parameters(), 'lr': args.lr},
+            {'params': model.seg_head.parameters(), 'lr': args.lr}
+            ],
+            weight_decay=args.weight_decay
+        )
+
+        lr_scheduler = torch.optim.lr_scheduler.SequentialLR(
+        optimizer,
+            [
+                torch.optim.lr_scheduler.LinearLR(
+                    optimizer,
+                    start_factor=1e-6,
+                    end_factor=1.0,
+                    total_iters=args.warmup*len(coarse_dataloader)
+                ),
+                torch.optim.lr_scheduler.CosineAnnealingLR(
+                    optimizer,
+                    T_max=(args.warmup - args.warmup)*len(coarse_dataloader),
+                    eta_min=1e-6
+                )
+            ],
+            milestones=[args.warmup*len(coarse_dataloader)]
+        )
+
+        checkpoints = 0.0
+
+        print("Starting pre-training...")
+
+        for epoch in range(args.pre_epochs):
+            print(f"Epoch {epoch+1:04}/{args.pre_epochs:04}")
+            
+            model.train()
+
+            for i, (images, labels) in enumerate(coarse_dataloader):
+                labels = convert_to_train_id(labels)
+                images, labels = images.to(device), labels.to(device)
+
+                labels = labels.long().squeeze(1)
+            
+                optimizer.zero_grad()
+
+                with autocast(device_type='cuda', dtype=torch.float16):
+                    outputs = model(images)
+                    loss, _ = criterion(outputs, labels)
+
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(
+                    model.parameters(),
+                    max_norm=1.0,
+                    norm_type=2.0
+                )
+                scaler.step(optimizer)
+                scaler.update()
+                lr_scheduler.step()
+
+                wandb.log({
+                    "pre_train_loss": loss.item(),
+                    "pre_train_learning_rate": optimizer.param_groups[0]['lr'],
+                    "pre_train_epoch": epoch + 1
+                    }, 
+                    step = epoch * len(coarse_dataloader) + i
+                )
+
+            # Validation
+            model.eval()
+            with torch.no_grad():
+                coarse_losses = []
+                for i, (images, labels) in enumerate(coarse_val_dataloader):
+
+                    labels = convert_to_train_id(labels)  # Convert class IDs to train IDs
+                    images, labels = images.to(device), labels.to(device)
+
+                    labels = labels.long().squeeze(1)  # Remove channel dimension
+
+                    outputs = model(images)
+                    loss, _ = criterion(outputs, labels)
+                    dice = dice_metric(outputs['segmentation'], labels)
+                    coarse_losses.append(loss.item())
+
+                    outputs = outputs['segmentation']
+                
+                    if i == 0:
+                        predictions = outputs.softmax(1).argmax(1)
+
+                        predictions = predictions.unsqueeze(1)
+                        labels = labels.unsqueeze(1)
+
+                        predictions = convert_train_id_to_color(predictions)
+                        labels = convert_train_id_to_color(labels)
+
+                        predictions_img = make_grid(predictions.cpu(), nrow=8)
+                        labels_img = make_grid(labels.cpu(), nrow=8)
+
+                        predictions_img = predictions_img.permute(1, 2, 0).numpy()
+                        labels_img = labels_img.permute(1, 2, 0).numpy()
+
+                        wandb.log({
+                            "pre_train_predictions": [wandb.Image(predictions_img)],
+                            "pre_train_labels": [wandb.Image(labels_img)],
+                        }, step=(epoch + 1) * len(coarse_dataloader) - 1)
+                
+                coarse_valid_loss = sum(coarse_losses) / len(coarse_losses)
+                wandb.log({
+                    "pre_train_valid_loss": coarse_valid_loss,
+                    "DICE": dice
+                }, step=(epoch + 1) * len(coarse_dataloader) - 1)
+
+                if (epoch + 1) % 5 == 0:
+                    checkpoint_path = os.path.join(output_dir, f"pretrained_checkpoint_epoch_{epoch + 1}.pth")
+                    torch.save(model.state_dict(), checkpoint_path)
+                    checkpoints = checkpoints + 1
+                    wandb.log({
+                        "checkpoints": checkpoints
+                        }, 
+                        step=(epoch + 1) * len(coarse_dataloader) - 1)
+
+
+                # Early stopping check
+                if early_stopping(coarse_valid_loss, model):
+                    print("Early stopping triggered")
+                    torch.save(
+                        model.state_dict(),
+                        os.path.join(
+                            output_dir,
+                            "pre_trained_model.pth"
+                        )
+                    )
+                    break
+        
+        # Save final model
+        torch.save(
+            model.state_dict(),
+            os.path.join(
+                output_dir,
+                "pre_trained_model.pth"
+            )
+        )
+        
+        print("Pre-training finished!")
+
+    if args.load_weights == 1:
+
+        pre_train_path = os.path.join(output_dir,"pretrained_checkpoint_epoch_5.pth")
+
+        # If the model is not pre trained, see if pre-trained weights are available
+        if args.pre_train == 0 and os.path.exists(pre_train_path):
+            print(f"Loading precomputed class weights from {pre_train_path}")
+            weights = torch.load(pre_train_path, map_location=device)
+            model.load_state_dict(weights)
+            print("Pre-trained weights loaded")
+
     # --- Training ---
 
     print("Starting training...")
@@ -393,19 +670,24 @@ def main(args):
     # Give more weight to DICE loss for fine-tuning
     ce_weight = 2.0
     dice_weight = 5.0
+    aux_weight = 0.4
         
     # Define the loss function
     criterion = SemanticSegmentationCriterion(
         class_weights=class_weights, 
         ce_weight=ce_weight, 
         dice_weight=dice_weight,
+        aux_weight=aux_weight,
         reg_loss=model.pixel_decoder.offset_reg_loss
     ).to(device)
 
     # Set new LR
     optimizer = AdamW([
         {'params': model.encoder.parameters(), 'lr': 0.1*args.lr},
-        {'params': model.pixel_decoder.parameters(), 'lr': args.lr}
+        {'params': model.pixel_decoder.parameters(), 'lr': args.lr},
+        {'params': model.transformer_decoder.parameters(), 'lr': args.lr},
+        {'params': model.fuse_feat.parameters(), 'lr': args.lr},
+        {'params': model.seg_head.parameters(), 'lr': args.lr},
         ],
         weight_decay=args.weight_decay   
     )
@@ -427,6 +709,15 @@ def main(args):
             ],
             milestones=[args.warmup*len(train_dataloader)]
         )
+    
+    # Unfreeze Swin encoder
+    for param in model.encoder.parameters():
+            param.requires_grad = True
+
+    
+    # Unfreeze deformable convolutions
+    for param in model.pixel_decoder.gen_offset.parameters():
+        param.requires_grad = True
 
     best_valid_loss = float('inf')
     best_valid_loss_ema = float('inf')
