@@ -427,6 +427,18 @@ def main(args):
             ],
             milestones=[args.warmup*len(train_dataloader)]
         )
+    
+    # Load checkpoint
+    checkpoint_path = os.path.join(output_dir,"train_checkpoint_epoch_60.pth")
+
+    if os.path.exists(checkpoint_path):
+        print(f"Loading checkpoint from {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        lr_scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        scaler.load_state_dict(checkpoint['scaler_state_dict'])        
+        print("Checkpoint loaded")
 
     best_valid_loss = float('inf')
     best_valid_loss_ema = float('inf')
