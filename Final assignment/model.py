@@ -9,7 +9,7 @@ class SwinEncoder(nn.Module):
         super(SwinEncoder, self).__init__()
 
         # Load a swin-t v2 model pre-trained on ImageNet
-        self.model = models.swin_v2_t(weights='IMAGENET1K_V1')
+        self.model = models.swin_v2_b(weights='IMAGENET1K_V1')
 
         # Remove the classification head
         self.model.head = nn.Identity()
@@ -36,7 +36,7 @@ class SwinEncoder(nn.Module):
         return featuremaps
 
 class FaPNDecoder(nn.Module):
-    def __init__(self,in_channels=[768,384,192,96], out_channels=256, n_classes=19, reg_weight=0.01):
+    def __init__(self,in_channels=[1024,512,256,128], out_channels=256, n_classes=19, reg_weight=0.01):
         super(FaPNDecoder, self).__init__()
 
         self.offset_scalers = nn.Parameter(torch.ones(len(in_channels)) * 3.0)
